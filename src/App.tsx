@@ -32,6 +32,7 @@ export default function App() {
       <FontField
         fontA={state.fontA}
         fontB={state.fontB}
+        lastSlot={state.lastSlot}
         hoveredId={state.hoveredId}
         onSelect={selectFont}
         onHover={hoverFont}
