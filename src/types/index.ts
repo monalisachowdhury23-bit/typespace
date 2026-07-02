@@ -1,31 +1,19 @@
-export type ContextLabel =
-  | 'editorial'
-  | 'finance'
-  | 'health'
-  | 'technology'
-  | 'education'
-  | 'branding'
-  | 'multilingual';
+import type { PairingContext, FontCategory, BaseFont, Pairing } from '../data/fonts';
 
-export type FontCategory = 'serif' | 'sans-serif' | 'monospace';
+export type ContextLabel = PairingContext;
+export type { FontCategory, BaseFont, Pairing };
 
-export interface Pairing {
-  font: string;
-  googleFont: string;
-  contexts: ContextLabel[];
-  rationale: string;
+// Which font slot: left anchor or right anchor
+export type Slot = 'A' | 'B';
+
+export interface AppState {
+  fontA: string | null;   // font id in left anchor
+  fontB: string | null;   // font id in right anchor
+  lastSlot: Slot;         // which slot was filled last (for swap logic)
+  hoveredId: string | null;
 }
 
-export interface BaseFont {
-  id: string;
-  name: string;
-  category: FontCategory;
-  googleFont: string;
-  specimen: string;
-  position: { x: number; y: number };
-  pairings: Pairing[];
-}
-
+// Legacy — kept for any remaining canvas state refs
 export interface CanvasState {
   selectedFontId: string | null;
   hoveredNodeId: string | null;
