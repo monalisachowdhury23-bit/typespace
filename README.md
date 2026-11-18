@@ -38,11 +38,11 @@ Every pair of fonts gets a compatibility score, computed once at load (about 11,
 - Fonts score when they are close on the humanist to geometric axis (kinship) or far apart (deliberate contrast). The middle ground scores nothing.
 - Two Devanagari fonts get a bonus, and a clear difference in weight earns a little more.
 
-Hover a font and lines draw to its top five partners. Strong pairs pull the line almost straight and weaker ones let it sag, so you can read strength without a number. Line colour shows the kind of relationship: slate for kinship, amber for contrast, ember for two Devanagari faces.
+Hover a font and lines draw to its top five partners. Strong pairs pull the line almost straight and weaker ones let it sag, so you can read strength without a number. Line colour shows the kind of relationship: slate for kinship, amber for contrast. When both fonts carry Devanagari the line is dashed, so a Hindi pair still shows whether its fonts are alike or opposed, and the meaning never depends on colour alone.
 
 ### Anchoring
 
-Click a font and it flies to the centre on an arc (made from two tweens on x and y with different easings). Its twelve best partners gather in two rings around it, five close and seven further out, and every other font pushes outward and fades. Click a faded font to re-anchor on it, or press Escape to send everything home.
+Click a font and it flies to the centre on an arc (made from two tweens on x and y with different easings). Up to twelve of its best partners gather in two rings around it, five close and the rest further out, each with its name showing. Every other font moves out past the rings, fades, and stops responding, so the only choices left are real partners. Use the All fonts button, click the anchor again or press Escape to send everything home.
 
 ### The specimen
 
@@ -57,11 +57,13 @@ If either font is Devanagari, the specimen switches to a bilingual version: a Hi
 
 ## Details
 
-- A font only appears once its face has loaded, so nothing ever shows in a fallback font.
 - Fonts load in tiers: anchors immediately, the middle tier when the browser is idle, the rest in small batches after that.
 - Every font on the map is real HTML text set in its own face, and the connection lines are SVG underneath. All motion is GSAP on transform and opacity.
-- The field drifts slightly at rest and a few anchors pulse now and then. With reduced motion turned on, the opening animation is skipped.
-- Escape always steps back one level: specimen, then anchor, then the full map.
+- The field drifts slightly at rest and a few anchors pulse now and then. With reduced motion turned on, drift and pulses stop and every transition resolves almost instantly.
+- Every text colour clears 4.5:1 against the background, control borders and lines clear 3:1, and nothing is set smaller than 11px.
+- Tab moves through the map ring by ring, and focusing a font shows its partners the same way hover does. Selecting a font or opening a pair is announced to screen readers, and the specimen opens as a dialog with focus inside it.
+- Devanagari is only ever set in a face that has it, and Hindi text is marked as Hindi.
+- Escape steps back one level: out of the headline, then the specimen, then the anchor.
 
 ## Stack
 
@@ -87,6 +89,7 @@ src/data/computed-layout.ts   ring layout and relaxation
 src/components/SpatialMap.tsx the map: hover, anchoring, connection lines
 src/components/Specimen.tsx   the pairing specimen
 src/hooks/useFontLoader.ts    tiered font loading
+src/motion.ts                 reduced-motion handling
 docs/                         the design spec and the font dataset notes
 ```
 

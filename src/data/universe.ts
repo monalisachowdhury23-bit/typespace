@@ -92,7 +92,7 @@ export const FONT_UNIVERSE: readonly UniverseFont[] = [
   f('general-sans','General Sans','sans-serif','fontshare','Dependable, never boring','a',4,4,0.4),
   f('switzer','Switzer','sans-serif','fontshare','Helvetica, but softer edges','R',3,4,0.2),
   f('clash-display','Clash Display','display','fontshare','Big, blocky, unapologetic','A',10,7,0.6),
-  f('bricolage-grotesque','Bricolage Grotesque','sans-serif','fontshare','Weird uncle of grotesks','g',7,5,-0.2),
+  f('bricolage-grotesque','Bricolage Grotesque','sans-serif','google','Weird uncle of grotesks','g',7,5,-0.2,'Bricolage+Grotesque'),
   f('eczar','Eczar','serif','google','The shirorekha holds everything','क',6,6,-0.8,'Eczar'),
   f('mukta','Mukta','sans-serif','google','Workhorse across seven scripts','म',3,4,-0.4,'Mukta'),
   f('hind','Hind','sans-serif','google','UI voice of Devanagari','ह',3,4,-0.3,'Hind'),

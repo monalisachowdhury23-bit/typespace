@@ -4,7 +4,6 @@ import type { UniverseFont } from '../data/universe';
 
 // ── Tiered font loading (spec §12) ────────────────────────────────────────────
 // Tier 1 → immediate; tier 2 → requestIdleCallback; tier 3 → background trickle.
-// Nodes only render once their font is confirmed via document.fonts.load().
 
 function buildGoogleUrl(fonts: UniverseFont[]): string {
   const families = fonts
@@ -49,9 +48,10 @@ function loadBatch(batch: UniverseFont[], suffix: string) {
 
 export function useFontLoader() {
   useEffect(() => {
-    const tier1 = FONT_UNIVERSE.filter(f => f.tier === 1);
-    const tier2 = FONT_UNIVERSE.filter(f => f.tier === 2);
-    const tier3 = FONT_UNIVERSE.filter(f => f.tier === 3);
+    // Switzer is the interface font, so it loads with the first batch
+    const tier1 = FONT_UNIVERSE.filter(f => f.tier === 1 || f.id === 'switzer');
+    const tier2 = FONT_UNIVERSE.filter(f => f.tier === 2 && f.id !== 'switzer');
+    const tier3 = FONT_UNIVERSE.filter(f => f.tier === 3 && f.id !== 'switzer');
 
     // Tier 1 — immediate
     loadBatch(tier1, 't1');

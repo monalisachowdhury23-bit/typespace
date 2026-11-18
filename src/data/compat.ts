@@ -65,18 +65,22 @@ export function getCompatMap(fonts: readonly UniverseFont[]): Map<string, Compat
 
 // ── Relationship type → color token (spec §7.3) ───────────────────────────────
 
-export type RelType = 'kinship' | 'contrast' | 'bridge';
+export type RelType = 'kinship' | 'contrast';
 
+// Colour says how the two skeletons relate. Whether both fonts carry
+// Devanagari is a separate fact, shown as a dashed line (see bothDevanagari).
 export function relType(a: UniverseFont, b: UniverseFont): RelType {
-  if (a.indic && b.indic) return 'bridge';
   const dHG = Math.abs(a.humanistGeometric - b.humanistGeometric);
   return dHG <= 0.5 ? 'kinship' : 'contrast';
+}
+
+export function bothDevanagari(a: UniverseFont, b: UniverseFont): boolean {
+  return a.indic && b.indic;
 }
 
 export const REL_COLORS: Record<RelType, string> = {
   kinship:  '#8FB0CE',
   contrast: '#D9A05B',
-  bridge:   '#E06B3C',
 };
 
 // ── Annotation copy (spec §7.5) ───────────────────────────────────────────────
@@ -88,10 +92,7 @@ export function annotationCopy(a: UniverseFont, b: UniverseFont): string {
   const role = dAff >= 3 ? 'display over text' : 'peer roles';
 
   let structure: string;
-  const rt = relType(a, b);
-  if (rt === 'bridge') {
-    structure = 'Devanagari kin';
-  } else if (rt === 'kinship') {
+  if (relType(a, b) === 'kinship') {
     const bothHumanist = a.humanistGeometric < 0 && b.humanistGeometric < 0;
     structure = bothHumanist ? 'both drawn' : 'both constructed';
   } else {
@@ -100,6 +101,7 @@ export function annotationCopy(a: UniverseFont, b: UniverseFont): string {
 
   const parts: string[] = [role, structure];
   if (dVW >= 3) parts.push('contrasting weight rhythm');
+  if (bothDevanagari(a, b)) parts.push('both have Devanagari');
 
   return parts.join(' · ');
 }
@@ -112,7 +114,8 @@ export function rationaleSentence(display: UniverseFont, text: UniverseFont): st
   const melody = dHG >= 1.0 ? 'argument' : 'melody';
   const roles  = dAff >= 3  ? 'a clean split of roles' : 'two peers taking turns';
   const struct = annotationCopy(display, text).split(' · ')[1] ?? '';
-  return `${display.name} carries the ${melody}; ${text.name} carries the reader. ${struct} — ${roles}.`;
+  const lead = struct ? struct.charAt(0).toUpperCase() + struct.slice(1) : '';
+  return `${display.name} carries the ${melody}; ${text.name} carries the reader. ${lead}, ${roles}.`;
 }
 
 // ── Quadratic bezier control point + SVG path (spec §7.1) ─────────────────────

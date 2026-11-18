@@ -208,8 +208,7 @@ export function orbitPositions(
   vw: number,
   vh: number,
 ): NodePos[] {
-  const INNER_R = 230;
-  const OUTER_R = 340;
+  const { inner: INNER_R, outer: OUTER_R } = orbitRadii(vw, vh);
   const MIN_ANG = (24 * Math.PI) / 180;
 
   function placeRing(semanticAngles: number[], radius: number): NodePos[] {
@@ -248,7 +247,16 @@ export function orbitPositions(
   return [...placeRing(innerAngles, INNER_R), ...placeRing(outerAngles, OUTER_R)];
 }
 
+// Orbit radii scale with the viewport so partners stay on screen on phones.
+export function orbitRadii(vw: number, vh: number): { inner: number; outer: number } {
+  const m = Math.min(vw, vh);
+  if (m < 600) return { inner: m * 0.3, outer: m * 0.45 };
+  return { inner: Math.min(230, m * 0.27), outer: Math.min(340, m * 0.41) };
+}
+
 // ── Periphery push (spec §8.3) ────────────────────────────────────────────────
+// Faded fonts move out past the outer orbit so nothing crowds the anchor or
+// its partners. Direction is kept, so the map still reads as the same map.
 export function peripheryPos(
   current: NodePos,
   anchor: NodePos,
@@ -257,8 +265,17 @@ export function peripheryPos(
 ): NodePos {
   const dx = current.x - anchor.x;
   const dy = current.y - anchor.y;
-  return {
-    x: clamp(anchor.x + dx * 1.35, 0.03 * vw, 0.97 * vw),
-    y: clamp(anchor.y + dy * 1.35, 0.03 * vh, 0.97 * vh),
-  };
+  const dist = Math.hypot(dx, dy) || 1;
+  const ux = dx / dist, uy = dy / dist;
+  const { outer } = orbitRadii(vw, vh);
+  // Room available in this direction before the screen edge (24px margin)
+  const edge = Math.min(
+    Math.abs(ux) > 1e-3 ? (vw / 2 - 24) / Math.abs(ux) : Infinity,
+    Math.abs(uy) > 1e-3 ? (vh / 2 - 24) / Math.abs(uy) : Infinity,
+  );
+  const inner = Math.min(outer + 44, edge);
+  const maxDist = Math.min(vw * 0.46, vh * 0.47);
+  const t = Math.min(1, dist / maxDist);
+  const target = inner + t * Math.max(0, edge - inner);
+  return { x: anchor.x + ux * target, y: anchor.y + uy * target };
 }

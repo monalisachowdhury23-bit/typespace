@@ -7,17 +7,28 @@ import type { UniverseFont } from '../data/universe';
 import { computePositions, orbitPositions, peripheryPos } from '../data/computed-layout';
 import type { NodePos } from '../data/computed-layout';
 import {
-  getCompatMap, relType, REL_COLORS, annotationCopy,
+  getCompatMap, relType, REL_COLORS, annotationCopy, bothDevanagari,
   bezierPath, bezierMidpoint,
 } from '../data/compat';
 import { useViewport } from '../hooks/useViewport';
 import type { AppState } from '../hooks/useAppState';
+import { prefersReducedMotion } from '../motion';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 // Star magnitudes — Aa at three sizes creates foreground / midground / background depth
 const GLYPH_SIZE: Record<1 | 2 | 3, number> = { 1: 24, 2: 16, 3: 11 };
-const TIER_OPACITY: Record<1 | 2 | 3, number> = { 1: 1.0, 2: 0.65, 3: 0.30 };
+// Every tier stays above 4.5:1 against the background (tier 3 = 5.3:1).
+const TIER_OPACITY: Record<1 | 2 | 3, number> = { 1: 1.0, 2: 0.75, 3: 0.55 };
+const DIM_FLOOR = 0.55;          // hover-dimming never drops a font below 4.5:1
+const PERIPHERY_OPACITY = 0.22;  // faded fonts while anchored: inactive, not clickable
+const NAME_IDLE = 0.6;           // tier-1 names at rest (6.2:1)
+// On narrow screens names only appear on tap, otherwise they pile into each other
+const nameIdle = (tier: 1 | 2 | 3) =>
+  tier === 1 && typeof window !== 'undefined' && window.innerWidth >= 700 ? NAME_IDLE : 0;
 const LINE_STANDOFF = 8; // px
+const DASH = '6 5';       // dashed line = both fonts carry Devanagari
+const INNER_COUNT = 5;
+const ORBIT_COUNT = 12;
 
 interface ConnectionLine {
   key: string;
@@ -29,6 +40,7 @@ interface ConnectionLine {
   midY: number;
   delay: number;
   partnerId: string; // so tooltip can look up visual position
+  dashed: boolean;   // both fonts carry Devanagari
 }
 
 interface TooltipState {
@@ -43,11 +55,18 @@ interface Props {
   state: AppState;
   onSelect: (id: string) => void;
   onHover: (id: string | null) => void;
+  onBack: () => void;
 }
 
 // ── Compat map (module-level singleton) ──────────────────────────────────────
 const COMPAT_MAP = getCompatMap(FONT_UNIVERSE);
 const FONT_MAP = new Map(FONT_UNIVERSE.map(f => [f.id, f]));
+
+function idHash(id: string) {
+  const h1 = (id.charCodeAt(0) * 7 + id.charCodeAt(1) * 3) % 100 / 100;
+  const h2 = (id.charCodeAt(2) * 11 + id.length * 5) % 100 / 100;
+  return { h1, h2 };
+}
 
 // ── FontNameplate ─────────────────────────────────────────────────────────────
 interface NameplateProps {
@@ -55,15 +74,16 @@ interface NameplateProps {
   x: number;
   y: number;
   nodeRef: (el: HTMLDivElement | null) => void;
-  onClick: () => void;
-  onPointerEnter: () => void;
-  onPointerLeave: () => void;
+  onActivate: (id: string) => void;
+  onEnter: (id: string) => void;
+  onLeave: (id: string) => void;
 }
 
 const FontNameplate = memo(function FontNameplate({
-  font, x, y, nodeRef, onClick, onPointerEnter, onPointerLeave,
+  font, x, y, nodeRef, onActivate, onEnter, onLeave,
 }: NameplateProps) {
   const glyphSize = GLYPH_SIZE[font.tier];
+  const hit = Math.max(32, glyphSize * 2); // generous tap target around small glyphs
 
   return (
     <div
@@ -74,76 +94,93 @@ const FontNameplate = memo(function FontNameplate({
       tabIndex={0}
       data-id={font.id}
       // left/top = semantic center; GSAP owns x/y/scale/opacity transforms.
-      // Inner wrapper uses CSS translate(-50%,-50%) to visually center the glyph
-      // on (x,y) without touching GSAP's transform system.
       style={{
         left: x,
         top: y,
         opacity: 0,
         willChange: 'transform, opacity',
       }}
-      onClick={onClick}
-      onPointerEnter={onPointerEnter}
-      onPointerLeave={onPointerLeave}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') onClick(); }}
+      onClick={() => onActivate(font.id)}
+      onPointerEnter={() => onEnter(font.id)}
+      onPointerLeave={() => onLeave(font.id)}
+      onFocus={() => onEnter(font.id)}
+      onBlur={() => onLeave(font.id)}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onActivate(font.id); }
+      }}
     >
-      {/* Inner centering wrapper — CSS only, never touched by GSAP */}
-      <div style={{
-        transform: 'translate(-50%, -50%)',
-        textAlign: 'center',
-        display: 'inline-block',
-        position: 'relative',
-      }}>
+      {/* Push layer — hover lift and "make room" live here, so they never
+          fight the drift and flight tweens on the outer node. */}
+      <div className="fn-push">
+        {/* Inner centering wrapper — CSS only, never touched by GSAP */}
+        <div style={{
+          transform: 'translate(-50%, -50%)',
+          textAlign: 'center',
+          display: 'inline-block',
+          position: 'relative',
+        }}>
+          {/* Invisible hit area so small glyphs are still easy to tap */}
+          <span aria-hidden="true" style={{
+            position: 'absolute', top: '50%', left: '50%',
+            width: hit, height: hit, transform: 'translate(-50%, -50%)',
+          }} />
 
-        {/* Hover ring — Typoverse-style circle, fades in on hover via GSAP */}
-        <div
-          className="fn-ring"
-          style={{
-            position: 'absolute',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            width: glyphSize * 3.2,
-            height: glyphSize * 3.2,
-            borderRadius: '50%',
-            border: '1px solid var(--ink)',
-            opacity: 0,
-            pointerEvents: 'none',
-          }}
-        />
+          {/* Hover ring */}
+          <div
+            className="fn-ring"
+            style={{
+              position: 'absolute',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: glyphSize * 3.2,
+              height: glyphSize * 3.2,
+              borderRadius: '50%',
+              border: '1px solid var(--ink)',
+              opacity: 0,
+              pointerEvents: 'none',
+            }}
+          />
 
-        {/* Primary node — 'Aa' in each font's own typeface.
-            150 fonts solving the same design problem. The field IS the comparison. */}
-        <div
-          className="fn-glyph"
-          style={{
-            fontFamily: `'${font.name}', serif, sans-serif`,
-            fontSize: glyphSize,
-            color: 'var(--ink)',
-            lineHeight: 1,
-            userSelect: 'none',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {font.signatureGlyph}
-        </div>
+          {/* Primary node — 'Aa' in each font's own typeface. */}
+          <div
+            className="fn-glyph"
+            aria-hidden="true"
+            style={{
+              fontFamily: `'${font.name}', serif, sans-serif`,
+              fontSize: glyphSize,
+              color: 'var(--ink)',
+              lineHeight: 1,
+              userSelect: 'none',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {font.signatureGlyph}
+          </div>
 
-        {/* Name label — tier 1: always dim, tier 2-3: hover-reveal via GSAP */}
-        <div
-          className="fn-name"
-          style={{
-            fontFamily: 'var(--font-ui)',
-            fontSize: 9,
-            color: 'var(--ink)',
-            opacity: font.tier === 1 ? 0.38 : 0,
-            marginTop: 4,
-            whiteSpace: 'nowrap',
-            letterSpacing: '0.06em',
-            textTransform: 'uppercase',
-            pointerEvents: 'none',
-          }}
-        >
-          {font.name}
+          {/* Name label — hangs below the glyph without affecting its centre,
+              so lines and the anchor position line up with the glyph itself */}
+          <div aria-hidden="true" style={{
+            position: 'absolute', top: '100%', left: '50%', width: 0,
+            display: 'flex', justifyContent: 'center', pointerEvents: 'none',
+          }}>
+            <div
+              className="fn-name"
+              style={{
+                fontFamily: 'var(--font-ui)',
+                fontSize: 11,
+                color: 'var(--ink)',
+                opacity: nameIdle(font.tier),
+                marginTop: 5,
+                whiteSpace: 'nowrap',
+                letterSpacing: '0.06em',
+                textTransform: 'uppercase',
+                flex: 'none',
+              }}
+            >
+              {font.name}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -151,48 +188,55 @@ const FontNameplate = memo(function FontNameplate({
 });
 
 // ── Partner annotation tooltip ────────────────────────────────────────────────
-// Appears near the partner node; key prop on partnerId triggers remount+re-anim
-// each time a different partner is hovered.
+// Kept fully on screen: measured after mount and nudged inside a 16px margin,
+// flipped above the font when it would collide with the bottom bar.
 function PartnerTooltip({ tt }: { tt: TooltipState }) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (ref.current) {
-      gsap.fromTo(ref.current,
-        { opacity: 0, y: 6 },
-        { opacity: 1, y: 0, duration: 0.22, ease: 'power2.out' },
-      );
-    }
-  }, []);
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let left = tt.x - r.width / 2;
+    left = Math.max(16, Math.min(vw - 16 - r.width, left));
+    let top = tt.y + 30;
+    if (top + r.height > vh - 96) top = tt.y - 30 - r.height;
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+    gsap.fromTo(el,
+      { opacity: 0, y: 6 },
+      { opacity: 1, y: 0, duration: 0.22, ease: 'power2.out' },
+    );
+  }, [tt]);
 
   return (
     <div
       ref={ref}
+      aria-hidden="true"
       style={{
         position: 'fixed',
         left: tt.x,
-        top: tt.y + 28,
-        transform: 'translateX(-50%)',
+        top: tt.y + 30,
         pointerEvents: 'none',
         zIndex: 20,
         opacity: 0,
+        maxWidth: 'calc(100vw - 32px)',
       }}
     >
       <div style={{
         display: 'inline-flex',
         alignItems: 'center',
-        gap: 6,
-        background: 'rgba(6, 6, 6, 0.92)',
-        border: `1px solid ${tt.color}28`,
+        background: 'rgba(6, 6, 6, 0.94)',
+        border: `1px solid ${tt.color}55`,
         borderLeft: `2px solid ${tt.color}`,
-        borderRadius: '0 3px 3px 0',
-        padding: '5px 10px 5px 8px',
+        borderRadius: '0 4px 4px 0',
+        padding: '7px 12px 7px 10px',
         fontFamily: 'var(--font-ui)',
-        fontSize: 9,
+        fontSize: 12,
+        lineHeight: 1.4,
         color: tt.color,
-        letterSpacing: '0.10em',
-        textTransform: 'uppercase',
-        whiteSpace: 'nowrap',
+        letterSpacing: '0.04em',
       }}>
         {tt.label}
       </div>
@@ -201,31 +245,74 @@ function PartnerTooltip({ tt }: { tt: TooltipState }) {
 }
 
 // ── Main SpatialMap component ─────────────────────────────────────────────────
-export function SpatialMap({ state, onSelect, onHover }: Props) {
+export function SpatialMap({ state, onSelect, onHover, onBack }: Props) {
   const { w, h } = useViewport();
   const svgRef = useRef<SVGSVGElement>(null);
   const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const ambientTweens = useRef<Map<string, gsap.core.Tween>>(new Map());
   const ambientStarted = useRef(false);
   const prevAnchorId = useRef<string | null>(null);
+  const prevSize = useRef({ w, h });
+  const prevMode = useRef(state.mode);
+  const lastPartnerId = useRef<string | null>(null);
   // Tracks where partners land during anchor state so connection lines draw accurately
   const orbitPosRef = useRef<Map<string, NodePos>>(new Map());
   const shockwaveRef = useRef<HTMLDivElement>(null);
   const modeRef = useRef(state.mode);
+  const anchorRef = useRef(state.anchorId);
   const heartbeatTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const pendingTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const [connections, setConnections] = useState<ConnectionLine[]>([]);
   const [tooltip, setTooltip] = useState<TooltipState | null>(null);
+  const [announce, setAnnounce] = useState('');
 
-  // Keep modeRef current for setTimeout callbacks (avoids stale closure)
+  // Keep refs current for timeout callbacks (avoids stale closures)
   useEffect(() => { modeRef.current = state.mode; }, [state.mode]);
+  useEffect(() => { anchorRef.current = state.anchorId; }, [state.anchorId]);
+  useEffect(() => { if (state.partnerId) lastPartnerId.current = state.partnerId; }, [state.partnerId]);
 
   // ── Semantic positions (memoized on viewport size) ──────────────────────────
   const positions = useMemo(() => computePositions(FONT_UNIVERSE, w, h), [w, h]);
 
+  // Render (and therefore tab) order follows the map: inner ring outward,
+  // clockwise from twelve o'clock within each ring.
+  const orderedFonts = useMemo(() => {
+    const cx = w / 2, cy = h / 2;
+    const band = Math.min(w * 0.46, h * 0.47) * 0.18;
+    const key = (f: UniverseFont) => {
+      const p = positions.get(f.id) ?? { x: cx, y: cy };
+      const ring = Math.round(Math.hypot(p.x - cx, p.y - cy) / band);
+      let ang = Math.atan2(p.x - cx, -(p.y - cy)); // 0 at top, clockwise
+      if (ang < 0) ang += Math.PI * 2;
+      return ring * 10 + ang;
+    };
+    return [...FONT_UNIVERSE].sort((a, b) => key(a) - key(b));
+  }, [positions, w, h]);
+
   // ── Register node refs ──────────────────────────────────────────────────────
-  const setNodeRef = useCallback((id: string) => (el: HTMLDivElement | null) => {
-    if (el) nodeRefs.current.set(id, el);
-    else    nodeRefs.current.delete(id);
+  const refCallbacks = useRef(new Map<string, (el: HTMLDivElement | null) => void>());
+  const setNodeRef = useCallback((id: string) => {
+    let cb = refCallbacks.current.get(id);
+    if (!cb) {
+      cb = (el: HTMLDivElement | null) => {
+        if (el) nodeRefs.current.set(id, el);
+        else    nodeRefs.current.delete(id);
+      };
+      refCallbacks.current.set(id, cb);
+    }
+    return cb;
+  }, []);
+
+  const later = (fn: () => void, ms: number) => {
+    const t = setTimeout(fn, ms);
+    pendingTimers.current.push(t);
+    return t;
+  };
+
+  // Cleanup on unmount
+  useEffect(() => () => {
+    heartbeatTimers.current.forEach(clearTimeout);
+    pendingTimers.current.forEach(clearTimeout);
   }, []);
 
   // ── Field entrance animation ─────────────────────────────────────────────────
@@ -233,83 +320,68 @@ export function SpatialMap({ state, onSelect, onHover }: Props) {
     if (ambientStarted.current || nodeRefs.current.size < 10) return;
     ambientStarted.current = true;
 
-    // Positions by tier for stagger order
     const allNodes: { el: HTMLDivElement; font: UniverseFont }[] = [];
     FONT_UNIVERSE.forEach(font => {
       const el = nodeRefs.current.get(font.id);
       if (el) allNodes.push({ el, font });
     });
 
-    gsap.matchMedia().add('(prefers-reduced-motion: no-preference)', () => {
-      // Tier 1 with back.out swagger
-      const t1Nodes = allNodes.filter(n => n.font.tier === 1).map(n => n.el);
-      const t23Nodes = allNodes.filter(n => n.font.tier !== 1);
+    if (prefersReducedMotion()) {
+      allNodes.forEach(({ el, font }) => gsap.set(el, { opacity: TIER_OPACITY[font.tier], scale: 1 }));
+      return; // no drift, no pulses
+    }
 
-      gsap.fromTo(t1Nodes,
+    const t1Nodes = allNodes.filter(n => n.font.tier === 1).map(n => n.el);
+    const t23Nodes = allNodes.filter(n => n.font.tier !== 1);
+
+    gsap.fromTo(t1Nodes,
+      { opacity: 0, scale: 0.6, y: 14 },
+      { opacity: 1, scale: 1, y: 0, duration: 0.9, ease: 'back.out(1.2)',
+        stagger: { each: 0.015, from: 'center' },
+        onComplete: startAmbientDrift,
+      });
+
+    t23Nodes.forEach(({ el, font }, i) => {
+      gsap.fromTo(el,
         { opacity: 0, scale: 0.6, y: 14 },
-        { opacity: 1, scale: 1, y: 0, duration: 0.9, ease: 'back.out(1.2)',
-          stagger: { each: 0.015, from: 'center' },
-          onComplete: startAmbientDrift,
+        { opacity: TIER_OPACITY[font.tier], scale: 1, y: 0,
+          duration: 0.9, ease: 'power3.out',
+          delay: 0.012 * i,
         });
-
-      t23Nodes.forEach(({ el, font }, i) => {
-        gsap.fromTo(el,
-          { opacity: 0, scale: 0.6, y: 14 },
-          { opacity: TIER_OPACITY[font.tier], scale: 1, y: 0,
-            duration: 0.9, ease: 'power3.out',
-            delay: 0.012 * i,
-          });
-      });
-    });
-
-    gsap.matchMedia().add('(prefers-reduced-motion: reduce)', () => {
-      allNodes.forEach(({ el, font }) => {
-        gsap.set(el, { opacity: TIER_OPACITY[font.tier], scale: 1 });
-      });
-      startAmbientDrift();
     });
   });
 
   // ── Ambient drift ────────────────────────────────────────────────────────────
-  function startAmbientDrift() {
-    if (ambientTweens.current.size > 0) return;
+  function makeDrift(font: UniverseFont, el: HTMLDivElement, delayScale = 4) {
+    const { h1, h2 } = idHash(font.id);
+    return gsap.to(el, {
+      x: `+=${(h1 * 2 - 1) * 3}`,
+      y: `+=${(h2 * 2 - 1) * 5}`,
+      duration: 6 + h1 * 5,
+      ease: 'sine.inOut',
+      yoyo: true,
+      repeat: -1,
+      delay: h2 * delayScale,
+    });
+  }
 
+  function startAmbientDrift() {
+    if (prefersReducedMotion() || ambientTweens.current.size > 0) return;
     FONT_UNIVERSE.forEach(font => {
       const el = nodeRefs.current.get(font.id);
-      if (!el) return;
-
-      // Deterministic offsets from font id hash
-      const h1 = (font.id.charCodeAt(0) * 7 + font.id.charCodeAt(1) * 3) % 100 / 100;
-      const h2 = (font.id.charCodeAt(2) * 11 + font.id.length * 5) % 100 / 100;
-      const jx = h1 * 2 - 1;
-      const jy = h2 * 2 - 1;
-      const dur = 6 + h1 * 5;
-
-      const t = gsap.to(el, {
-        x: `+=${jx * 3}`,
-        y: `+=${jy * 5}`,
-        duration: dur,
-        ease: 'sine.inOut',
-        yoyo: true,
-        repeat: -1,
-        delay: h2 * 4,
-      });
-      ambientTweens.current.set(font.id, t);
+      if (el) ambientTweens.current.set(font.id, makeDrift(font, el));
     });
-
-    // Kick off heartbeat pulses for tier-1 nodes after drift is running
     startHeartbeat();
   }
 
-  // ── Idle heartbeat — tier-1 nodes pulse randomly to keep the field alive ─────
-  // Ref pattern for recursive setTimeout without stale-closure issues.
+  // ── Idle heartbeat — tier-1 nodes pulse now and then to keep the field alive ─
+  const hoveredIdRef = useRef<string | null>(null);
   const heartbeatFn = useRef<((id: string) => void) | null>(null);
   heartbeatFn.current = (id: string) => {
-    const delay = 4000 + Math.random() * 4000; // 4–8 s between pulses
+    const delay = 4000 + Math.random() * 4000;
     const timer = setTimeout(() => {
-      // Skip if not idle or node is currently hovered (avoids scale conflicts)
       if (modeRef.current !== 'idle' || hoveredIdRef.current === id) {
-        heartbeatFn.current?.(id); // reschedule silently
+        heartbeatFn.current?.(id);
         return;
       }
       const el = nodeRefs.current.get(id);
@@ -320,31 +392,30 @@ export function SpatialMap({ state, onSelect, onHover }: Props) {
         ease: 'power2.out',
         yoyo: true,
         repeat: 1,
-        overwrite: false, // drift owns x/y; heartbeat only touches scale
+        overwrite: false,
         onComplete: () => heartbeatFn.current?.(id),
+        // If another tween takes over the scale, keep the rhythm going anyway
+        onInterrupt: () => heartbeatFn.current?.(id),
       });
     }, delay);
     heartbeatTimers.current.set(id, timer);
   };
 
   function startHeartbeat() {
-    // Short initial stagger so first pulses begin within a few seconds
     FONT_UNIVERSE.filter(f => f.tier === 1).forEach((f, i) => {
-      setTimeout(() => heartbeatFn.current?.(f.id), i * 300);
+      later(() => heartbeatFn.current?.(f.id), i * 300);
     });
   }
 
   function stopAmbientDrift(ids?: string[]) {
     const targets = ids ?? [...ambientTweens.current.keys()];
-    targets.forEach(id => {
-      ambientTweens.current.get(id)?.pause();
-    });
+    targets.forEach(id => ambientTweens.current.get(id)?.pause());
   }
 
-  // ── Hover ────────────────────────────────────────────────────────────────────
+  // ── Connections ──────────────────────────────────────────────────────────────
   const buildConnections = useCallback((
     font: UniverseFont,
-    srcPosOverride?: NodePos,   // pass visual position when font has moved (anchor state)
+    srcPosOverride?: NodePos,
   ): ConnectionLine[] => {
     const partners = (COMPAT_MAP.get(font.id) ?? []).slice(0, 5);
     const maxScore = partners[0]?.score ?? 1;
@@ -356,15 +427,12 @@ export function SpatialMap({ state, onSelect, onHover }: Props) {
 
     return partners.map((partner, i) => {
       const tgtFont = FONT_MAP.get(partner.id);
-      // Use orbit position if available (partners move to orbit in anchor state)
       const tgtPos  = orbitPosRef.current.get(partner.id) ?? positions.get(partner.id);
       if (!tgtFont || !tgtPos) return null;
 
       const normalizedCompat = (partner.score - minScore) / range;
-      const rt = relType(font, tgtFont);
-      const color = REL_COLORS[rt];
+      const color = REL_COLORS[relType(font, tgtFont)];
 
-      // Standoff points
       const dx = tgtPos.x - srcPos.x;
       const dy = tgtPos.y - srcPos.y;
       const dist = Math.hypot(dx, dy) || 1;
@@ -373,38 +441,33 @@ export function SpatialMap({ state, onSelect, onHover }: Props) {
       const x2 = tgtPos.x - (dx / dist) * LINE_STANDOFF;
       const y2 = tgtPos.y - (dy / dist) * LINE_STANDOFF;
 
-      const pathD = bezierPath(x1, y1, x2, y2, normalizedCompat);
-      const mid   = bezierMidpoint(x1, y1, x2, y2, normalizedCompat);
-
+      const mid = bezierMidpoint(x1, y1, x2, y2, normalizedCompat);
       return {
         key: `${font.id}-${partner.id}`,
-        path: pathD,
+        path: bezierPath(x1, y1, x2, y2, normalizedCompat),
         color,
-        dashLen: dist,
+        dashLen: dist * 1.3,
         label: annotationCopy(font, tgtFont),
         midX: mid.x,
         midY: mid.y,
         delay: i * 0.05,
         partnerId: partner.id,
+        dashed: bothDevanagari(font, tgtFont),
       } as ConnectionLine;
     }).filter((c): c is ConnectionLine => c !== null);
   }, [positions]);
 
-  const hoveredIdRef = useRef<string | null>(null);
+  // ── Hover / focus ────────────────────────────────────────────────────────────
+  const handleEnter = useCallback((id: string) => {
+    if (modeRef.current === 'paired') return;
 
-  const handlePointerEnter = useCallback((id: string) => {
-    if (state.mode === 'paired') return;
-
-    // ── Anchored mode: hover orbit partner → show annotation tooltip ────────────
-    // Gate strictly on orbitPosRef — only the 12 orbit partners are stored there.
-    // Periphery fonts are NOT in orbitPosRef, so they fall through and return early.
-    // This prevents (a) tooltip firing for every font, and (b) position using the
-    // stale ring position instead of the actual visual orbit position.
-    if (state.mode === 'anchored') {
-      if (!state.anchorId || id === state.anchorId) return;
+    // Anchored: hovering or focusing a partner shows how it relates to the anchor
+    if (modeRef.current === 'anchored') {
+      const anchorId = anchorRef.current;
+      if (!anchorId || id === anchorId) return;
       const vp = orbitPosRef.current.get(id);
-      if (!vp) return; // not an orbit partner — skip
-      const anchorFont  = FONT_MAP.get(state.anchorId);
+      if (!vp) return;
+      const anchorFont  = FONT_MAP.get(anchorId);
       const partnerFont = FONT_MAP.get(id);
       if (!anchorFont || !partnerFont) return;
       setTooltip({
@@ -423,271 +486,242 @@ export function SpatialMap({ state, onSelect, onHover }: Props) {
     const font = FONT_MAP.get(id);
     const el   = nodeRefs.current.get(id);
     if (!font || !el) return;
+    const rm = prefersReducedMotion();
 
-    // Lift glyph
-    gsap.to(el, { scale: 1.15, duration: 0.3, ease: 'back.out(1.8)', overwrite: 'auto' });
-    // Ring fades in
-    const ring = el.querySelector('.fn-ring') as HTMLElement | null;
-    if (ring) gsap.to(ring, { opacity: 0.18, duration: 0.35, ease: 'power2.out' });
-    // Surface name label (tier 2-3 start at 0; tier 1 bumps from 0.38)
-    const nm = el.querySelector('.fn-name') as HTMLElement | null;
-    if (nm) gsap.to(nm, { opacity: 0.85, duration: 0.25, ease: 'power2.out' });
+    const push = el.querySelector('.fn-push');
+    if (push && !rm) gsap.to(push, { scale: 1.15, duration: 0.3, ease: 'back.out(1.8)', overwrite: 'auto' });
+    gsap.to(el, { opacity: 1, duration: 0.2, overwrite: 'auto' });
+    const ring = el.querySelector('.fn-ring');
+    if (ring) gsap.to(ring, { opacity: 0.3, duration: 0.3, ease: 'power2.out' });
+    const nm = el.querySelector('.fn-name');
+    if (nm) gsap.to(nm, { opacity: 1, duration: 0.25, ease: 'power2.out' });
 
-    // Dim non-connected nodes
+    // Dim everything that isn't connected, never below the contrast floor
     const connectedIds = new Set((COMPAT_MAP.get(id) ?? []).slice(0, 5).map(p => p.id));
     FONT_UNIVERSE.forEach(f => {
       if (f.id === id || connectedIds.has(f.id)) return;
       const otherEl = nodeRefs.current.get(f.id);
-      if (otherEl) {
-        gsap.to(otherEl, { opacity: TIER_OPACITY[f.tier] * 0.75, duration: 0.3, overwrite: 'auto' });
-      }
+      if (otherEl) gsap.to(otherEl, { opacity: Math.max(DIM_FLOOR, TIER_OPACITY[f.tier] * 0.75), duration: 0.3, overwrite: 'auto' });
     });
 
-    // Neighbors make room (within 120px)
+    // Neighbours make room (within 120px) — on the push layer, absolute values
     const srcPos = positions.get(id);
-    if (srcPos) {
+    if (srcPos && !rm) {
       FONT_UNIVERSE.forEach(f => {
         if (f.id === id) return;
         const p = positions.get(f.id);
         if (!p) return;
         const dist = Math.hypot(p.x - srcPos.x, p.y - srcPos.y);
+        const nb = nodeRefs.current.get(f.id)?.querySelector('.fn-push');
+        if (!nb) return;
         if (dist < 120 && dist > 0) {
-          const pushX = ((p.x - srcPos.x) / dist) * 8;
-          const pushY = ((p.y - srcPos.y) / dist) * 8;
-          const neighborEl = nodeRefs.current.get(f.id);
-          if (neighborEl) {
-            gsap.to(neighborEl, { x: `+=${pushX}`, y: `+=${pushY}`, duration: 0.4, ease: 'power2.out', overwrite: 'auto' });
-          }
+          gsap.to(nb, { x: ((p.x - srcPos.x) / dist) * 8, y: ((p.y - srcPos.y) / dist) * 8, duration: 0.4, ease: 'power2.out', overwrite: 'auto' });
         }
       });
     }
 
-    // Draw connections
     setConnections(buildConnections(font));
-  }, [state.mode, onHover, positions, buildConnections]);
+  }, [onHover, positions, buildConnections]);
 
-  const handlePointerLeave = useCallback((id: string) => {
-    if (state.mode === 'paired') return;
+  const handleLeave = useCallback((id: string) => {
+    if (modeRef.current === 'paired') return;
 
-    // ── Anchored mode: cursor can roam freely — only clear tooltip ─────────────
-    if (state.mode === 'anchored') {
-      setTooltip(null);
+    if (modeRef.current === 'anchored') {
+      setTooltip(t => (t && t.partnerId === id ? null : t));
       return;
     }
 
+    if (hoveredIdRef.current !== id) return;
     hoveredIdRef.current = null;
     onHover(null);
 
     const el = nodeRefs.current.get(id);
     const font = FONT_MAP.get(id);
     if (el && font) {
-      gsap.to(el, { scale: 1, opacity: TIER_OPACITY[font.tier], duration: 0.25, ease: 'power2.in', overwrite: 'auto' });
-      const ring = el.querySelector('.fn-ring') as HTMLElement | null;
+      const push = el.querySelector('.fn-push');
+      if (push) gsap.to(push, { scale: 1, duration: 0.25, ease: 'power2.in', overwrite: 'auto' });
+      const ring = el.querySelector('.fn-ring');
       if (ring) gsap.to(ring, { opacity: 0, duration: 0.2, ease: 'power2.in' });
-      const nm = el.querySelector('.fn-name') as HTMLElement | null;
-      if (nm) gsap.to(nm, { opacity: font.tier === 1 ? 0.38 : 0, duration: 0.2, ease: 'power2.in' });
+      const nm = el.querySelector('.fn-name');
+      if (nm) gsap.to(nm, { opacity: nameIdle(font.tier), duration: 0.2, ease: 'power2.in' });
     }
 
-    // Restore all nodes
+    // Restore all nodes and every push layer
     FONT_UNIVERSE.forEach(f => {
       const otherEl = nodeRefs.current.get(f.id);
-      if (otherEl && f.id !== id) {
-        gsap.to(otherEl, { opacity: TIER_OPACITY[f.tier], duration: 0.25, ease: 'power2.in', overwrite: 'auto' });
-      }
+      if (!otherEl) return;
+      gsap.to(otherEl, { opacity: TIER_OPACITY[f.tier], duration: 0.25, ease: 'power2.in', overwrite: 'auto' });
+      const nb = otherEl.querySelector('.fn-push');
+      if (nb && f.id !== id) gsap.to(nb, { x: 0, y: 0, duration: 0.3, ease: 'power2.in', overwrite: 'auto' });
     });
 
-    // Restore neighbors
-    const srcPos = positions.get(id);
-    if (srcPos) {
-      FONT_UNIVERSE.forEach(f => {
-        if (f.id === id) return;
-        const p = positions.get(f.id);
-        if (!p) return;
-        const dist = Math.hypot(p.x - srcPos.x, p.y - srcPos.y);
-        if (dist < 120) {
-          const neighborEl = nodeRefs.current.get(f.id);
-          if (neighborEl) {
-            gsap.to(neighborEl, { x: 0, y: 0, duration: 0.3, ease: 'power2.in', overwrite: 'auto' });
-          }
-        }
-      });
-    }
-
-    // Retract connection lines — animate dashOffset before clearing
-    setTimeout(() => {
-      if (hoveredIdRef.current === null) setConnections([]);
+    later(() => {
+      if (hoveredIdRef.current === null && modeRef.current === 'idle') setConnections([]);
     }, 280);
-  }, [state.mode, onHover, positions]);
+  }, [onHover]);
 
-  // ── Anchor state — field reorganization ──────────────────────────────────────
+  // ── Make fonts active / inactive (faded fonts can't be clicked or tabbed) ────
+  function setActive(el: HTMLDivElement, active: boolean) {
+    el.style.pointerEvents = active ? 'auto' : 'none';
+    el.tabIndex = active ? 0 : -1;
+    if (active) el.removeAttribute('aria-hidden');
+    else el.setAttribute('aria-hidden', 'true');
+  }
+
+  // ── Anchor layout ────────────────────────────────────────────────────────────
+  function layoutAnchor(anchorId: string, instant: boolean) {
+    const anchorEl   = nodeRefs.current.get(anchorId);
+    const anchorFont = FONT_MAP.get(anchorId);
+    if (!anchorEl || !anchorFont) return;
+    const rm = prefersReducedMotion();
+    const d = (s: number) => (instant ? 0 : s);
+
+    // Clear any hover state left on the push layers
+    hoveredIdRef.current = null;
+    nodeRefs.current.forEach(el => {
+      const nb = el.querySelector('.fn-push');
+      if (nb) gsap.to(nb, { x: 0, y: 0, scale: 1, duration: d(0.2), overwrite: 'auto' });
+      const ring = el.querySelector('.fn-ring');
+      if (ring) gsap.to(ring, { opacity: 0, duration: d(0.2) });
+    });
+
+    const anchorBasePos = positions.get(anchorId) ?? { x: 0, y: 0 };
+    const center = { x: w * 0.5, y: h * 0.5 };
+    const anchorTarget = Math.min(w, h) < 600 ? 34 : 48;
+    const anchorScale = Math.max(anchorTarget, GLYPH_SIZE[anchorFont.tier] * 1.4) / GLYPH_SIZE[anchorFont.tier];
+
+    setConnections([]);
+    setTooltip(null);
+    const drift = ambientTweens.current.get(anchorId);
+    if (drift) { drift.kill(); ambientTweens.current.delete(anchorId); }
+    setActive(anchorEl, true);
+
+    const afterLanding = () => {
+      if (!instant && !rm && shockwaveRef.current) {
+        gsap.set(shockwaveRef.current, { left: center.x - 220, top: center.y - 220, scale: 0.09, opacity: 0.5 });
+        gsap.to(shockwaveRef.current, { scale: 1, opacity: 0, duration: 1.1, ease: 'power2.out' });
+      }
+      later(() => {
+        if (anchorRef.current !== anchorId) return;
+        const lines = buildConnections(anchorFont, center);
+        setConnections(lines);
+        const top1 = lines[0];
+        // On phones the hint would cover the anchor; tapping a partner opens the pair anyway
+        if (top1 && Math.min(w, h) >= 600) {
+          const vp = orbitPosRef.current.get(top1.partnerId) ?? positions.get(top1.partnerId) ?? { x: 0, y: 0 };
+          setTooltip({ partnerId: top1.partnerId, label: top1.label, color: top1.color, x: vp.x, y: vp.y });
+        }
+      }, instant ? 0 : 500);
+    };
+
+    // Arc flight — two desynchronized tweens
+    gsap.to(anchorEl, { x: center.x - anchorBasePos.x, duration: d(0.85), ease: 'power2.inOut', overwrite: 'auto' });
+    gsap.to(anchorEl, { y: center.y - anchorBasePos.y, duration: d(0.85), ease: 'power3.inOut', overwrite: 'auto' });
+    gsap.to(anchorEl, {
+      scale: anchorScale, opacity: 1, duration: d(0.85), ease: 'back.out(1.15)', overwrite: 'auto',
+      onComplete: afterLanding,
+    });
+    const anchorName = anchorEl.querySelector('.fn-name');
+    // On phones the bottom bar already names the anchor, so its label stays hidden
+    // The name is counter-scaled so it stays a readable label, not a headline
+    if (anchorName) gsap.to(anchorName, {
+      opacity: Math.min(w, h) < 600 ? 0 : 0.9,
+      scale: 1.25 / anchorScale, transformOrigin: '50% 0%',
+      duration: d(0.5), delay: d(0.4), ease: 'power2.out',
+    });
+
+    const reorganize = () => {
+      const partners = COMPAT_MAP.get(anchorId) ?? [];
+      const orbitPairs: { id: string; semanticPos: NodePos }[] = [];
+      for (const p of partners.slice(0, ORBIT_COUNT)) {
+        const semanticPos = positions.get(p.id);
+        if (semanticPos) orbitPairs.push({ id: p.id, semanticPos });
+      }
+      const topPartnerIds = new Set(orbitPairs.map(p => p.id));
+
+      orbitPosRef.current.clear();
+      const orbitTargets = orbitPositions(center, orbitPairs.map(p => p.semanticPos), w, h);
+
+      orbitPairs.forEach(({ id }, i) => {
+        const el = nodeRefs.current.get(id);
+        const target = orbitTargets[i];
+        if (!el || !target) return;
+        orbitPosRef.current.set(id, target);
+        const dt = ambientTweens.current.get(id);
+        if (dt) { dt.kill(); ambientTweens.current.delete(id); }
+        setActive(el, true);
+
+        const isInner = i < INNER_COUNT;
+        const basePos = positions.get(id) ?? { x: 0, y: 0 };
+        gsap.to(el, {
+          x: target.x - basePos.x,
+          y: target.y - basePos.y,
+          scale: 1,
+          opacity: isInner ? 1.0 : 0.8,
+          duration: d(1.1),
+          ease: isInner ? 'back.out(1.05)' : 'power3.inOut',
+          delay: d(0.015 * i),
+          overwrite: 'auto',
+        });
+        // Every partner shows its name, so you know what you're looking at
+        const nm = el.querySelector('.fn-name');
+        if (nm) gsap.to(nm, { opacity: 1, duration: d(0.4), delay: d(0.5) });
+      });
+
+      // Periphery — pushed out past the orbit, faded, and made inactive
+      FONT_UNIVERSE.forEach((font, fontIdx) => {
+        if (font.id === anchorId || topPartnerIds.has(font.id)) return;
+        const el = nodeRefs.current.get(font.id);
+        if (!el) return;
+        const basePos = positions.get(font.id) ?? { x: 0, y: 0 };
+        const target = peripheryPos(basePos, center, w, h);
+        stopAmbientDrift([font.id]);
+        setActive(el, false);
+        gsap.to(el, {
+          x: target.x - basePos.x,
+          y: target.y - basePos.y,
+          scale: 1,
+          opacity: PERIPHERY_OPACITY,
+          duration: d(1.1),
+          ease: 'power3.inOut',
+          delay: d(0.015 * fontIdx * 0.5),
+          overwrite: 'auto',
+        });
+        const nm = el.querySelector('.fn-name');
+        if (nm) gsap.to(nm, { opacity: 0, duration: d(0.3) });
+      });
+    };
+    if (instant) reorganize(); else later(reorganize, 100);
+  }
+
+  // ── Anchor state changes (and viewport changes while anchored) ──────────────
   useEffect(() => {
     const prev = prevAnchorId.current;
     const next = state.anchorId;
+    const sizeChanged = prevSize.current.w !== w || prevSize.current.h !== h;
     prevAnchorId.current = next;
+    prevSize.current = { w, h };
 
     if (next && next !== prev) {
-      // New anchor
-      const anchorEl   = nodeRefs.current.get(next);
-      const anchorFont = FONT_MAP.get(next);
-      if (!anchorEl || !anchorFont) return;
-
-      // Anchor flies to viewport centre — the visual heart of the ring system.
-      // GSAP delta = target screen pos − node's CSS left/top base position.
-      const anchorBasePos  = positions.get(next) ?? { x: 0, y: 0 };
-      const anchorVisualX  = w * 0.50;
-      const anchorVisualY  = h * 0.50;
-      const anchorDeltaX   = anchorVisualX - anchorBasePos.x;
-      const anchorDeltaY   = anchorVisualY - anchorBasePos.y;
-      const anchorScale  = Math.max(48, GLYPH_SIZE[anchorFont.tier] * 1.6) / GLYPH_SIZE[anchorFont.tier];
-
-      // Clear idle connections, remove hover connections
-      setConnections([]);
-      stopAmbientDrift([next]);
-
-      // Arc flight — two desynchronized tweens (spec §8.2)
-      gsap.to(anchorEl, {
-        x: anchorDeltaX, duration: 0.85, ease: 'power2.inOut', overwrite: 'auto',
-      });
-      gsap.to(anchorEl, {
-        y: anchorDeltaY, duration: 0.85, ease: 'power3.inOut', overwrite: 'auto',
-      });
-      gsap.to(anchorEl, {
-        scale: anchorScale, duration: 0.85, ease: 'back.out(1.15)', overwrite: 'auto',
-        onComplete: () => {
-          // Shockwave — single expanding ring from landing point (CSS div, not SVG — React won't reset it)
-          if (shockwaveRef.current) {
-            gsap.set(shockwaveRef.current, {
-              left: anchorVisualX - 220,
-              top: anchorVisualY - 220,
-              scale: 0.09,
-              opacity: 0.7,
-            });
-            gsap.to(shockwaveRef.current, {
-              scale: 1,
-              opacity: 0,
-              duration: 1.1,
-              ease: 'power2.out',
-            });
-          }
-          // Draw connections after partners are fully settled.
-          // Orbit anims: 1100ms duration, first fires at t+100ms → done by t+1200ms.
-          // This setTimeout fires at t+500ms after anchor lands (anchor takes ~850ms),
-          // so total from click = ~1350ms — all 12 orbit partners are at rest.
-          setTimeout(() => {
-            const lines = buildConnections(anchorFont, { x: anchorVisualX, y: anchorVisualY });
-            setConnections(lines);
-
-            // Auto-show top-1 partner annotation as a discovery hint
-            const top1 = lines[0];
-            if (top1) {
-              const vp = orbitPosRef.current.get(top1.partnerId) ?? positions.get(top1.partnerId) ?? { x: 0, y: 0 };
-              setTooltip({ partnerId: top1.partnerId, label: top1.label, color: top1.color, x: vp.x, y: vp.y });
-            }
-          }, 500);
-        },
-      });
-
-      // Name surfaces on anchor (glyph is already the primary node)
-      const anchorName = anchorEl.querySelector('.fn-name') as HTMLElement | null;
-      if (anchorName) gsap.to(anchorName, { opacity: 0.9, duration: 0.5, delay: 0.4, ease: 'power2.out' });
-
-      // Field reorganization starts 0.1s after anchor launches
-      setTimeout(() => {
-        const partners = COMPAT_MAP.get(next) ?? [];
-
-        // Build aligned pairs: filter BEFORE separating IDs/positions so index i
-        // in the pairs array always corresponds to index i in orbitTargets.
-        // (Previous pattern: .map(id=>pos).filter(Boolean) shifts indices when any
-        //  position is undefined, so partner A could receive target computed for B.)
-        type OrbitPair = { id: string; semanticPos: NodePos };
-        const orbitPairs: OrbitPair[] = [];
-        for (const p of partners.slice(0, 12)) {
-          const semanticPos = positions.get(p.id);
-          if (semanticPos) orbitPairs.push({ id: p.id, semanticPos });
-        }
-        const topPartnerIds = new Set(orbitPairs.map(p => p.id));
-
-        // Partners orbit around the VISUAL centre (where the anchor has flown),
-        // not the anchor's original ring position — this keeps lines accurate.
-        const anchorVisualCenter = { x: anchorVisualX, y: anchorVisualY };
-
-        // Clear previous orbit positions, then record new ones
-        orbitPosRef.current.clear();
-        const orbitTargets = orbitPositions(
-          anchorVisualCenter,
-          orbitPairs.map(p => p.semanticPos),
-          w, h,
-        );
-
-        // Inner ring (0–4) → outer ring (5–11)
-        orbitPairs.forEach(({ id }, i) => {
-          const el = nodeRefs.current.get(id);
-          if (!el) return;
-          const target = orbitTargets[i];
-          if (!target) return;
-          // Record visual landing position so buildConnections can draw accurate lines
-          orbitPosRef.current.set(id, target);
-
-          // Kill drift entirely (not just pause) — paused drift tween holds stale x
-          // value. If resumed while node is at orbit_delta, GSAP snaps it back to
-          // drift's paused state, making the node jump away from its orbit position.
-          const driftTween = ambientTweens.current.get(id);
-          if (driftTween) { driftTween.kill(); ambientTweens.current.delete(id); }
-
-          const isInner = i < 5;
-          // GSAP x/y are deltas from the node's left/top base position
-          const basePos = positions.get(id) ?? { x: 0, y: 0 };
-
-          gsap.to(el, {
-            x: target.x - basePos.x,
-            y: target.y - basePos.y,
-            scale: 1,
-            opacity: isInner ? 1.0 : 0.8,
-            duration: 1.1,
-            ease: isInner ? 'back.out(1.05)' : 'power3.inOut',
-            delay: 0.015 * i,
-            overwrite: 'auto',
-            // No drift resume here — node stays pinned at orbit position.
-            // Drift is recreated on anchor release once x returns to 0.
-          });
-        });
-
-        // Periphery — push radially outward from visual centre and dim
-        FONT_UNIVERSE.forEach((font, fontIdx) => {
-          if (font.id === next || topPartnerIds.has(font.id)) return;
-          const el = nodeRefs.current.get(font.id);
-          if (!el) return;
-          const curPos = positions.get(font.id)!;
-          const target = peripheryPos(curPos, anchorVisualCenter, w, h);
-          const basePos = positions.get(font.id) ?? { x: 0, y: 0 };
-
-          stopAmbientDrift([font.id]);
-          gsap.to(el, {
-            x: target.x - basePos.x,
-            y: target.y - basePos.y,
-            opacity: 0.15,
-            duration: 1.1,
-            ease: 'power3.inOut',
-            delay: 0.015 * fontIdx,
-            overwrite: 'auto',
-          });
-          ambientTweens.current.get(font.id)?.pause();
-        });
-
-      }, 100);
-
+      layoutAnchor(next, false);
+      const font = FONT_MAP.get(next);
+      const partners = (COMPAT_MAP.get(next) ?? []).slice(0, ORBIT_COUNT);
+      const best = partners[0] ? FONT_MAP.get(partners[0].id)?.name : null;
+      if (font) setAnnounce(`${font.name} selected. ${partners.length} suggested partners${best ? `, best match ${best}` : ''}. Choose one to see the pair, or press Escape to go back.`);
+    } else if (next && sizeChanged) {
+      layoutAnchor(next, true);
     } else if (!next && prev) {
-      // Released — return to idle
       orbitPosRef.current.clear();
       setConnections([]);
       setTooltip(null);
+      setAnnounce('Back to all 150 fonts.');
+      const rm = prefersReducedMotion();
 
       FONT_UNIVERSE.forEach(font => {
         const el = nodeRefs.current.get(font.id);
         if (!el) return;
-
-        // Return to base position = GSAP x:0, y:0 (transforms cancel out; left/top holds position)
-        const delay = Math.random() * 0.4;
+        setActive(el, true);
+        const delay = rm ? 0 : Math.random() * 0.4;
         gsap.to(el, {
           x: 0,
           y: 0,
@@ -698,46 +732,34 @@ export function SpatialMap({ state, onSelect, onHover }: Props) {
           delay,
           overwrite: 'auto',
           onComplete: () => {
-            // Kill any stale drift tween (orbit partners had theirs killed; periphery/anchor
-            // had theirs paused). Recreate fresh so drift starts cleanly from rest (x=0, y=0).
             ambientTweens.current.get(font.id)?.kill();
-            const h1 = (font.id.charCodeAt(0) * 7 + font.id.charCodeAt(1) * 3) % 100 / 100;
-            const h2 = (font.id.charCodeAt(2) * 11 + font.id.length * 5) % 100 / 100;
-            const jx = h1 * 2 - 1;
-            const jy = h2 * 2 - 1;
-            const t = gsap.to(el, {
-              x: `+=${jx * 3}`,
-              y: `+=${jy * 5}`,
-              duration: 6 + h1 * 5,
-              ease: 'sine.inOut',
-              yoyo: true,
-              repeat: -1,
-              delay: h2 * 2,
-            });
-            ambientTweens.current.set(font.id, t);
+            ambientTweens.current.delete(font.id);
+            if (!rm) ambientTweens.current.set(font.id, makeDrift(font, el, 2));
           },
         });
-        // Restore name label to idle state
-        const nm = el.querySelector('.fn-name') as HTMLElement | null;
-        if (nm) gsap.to(nm, { opacity: font.tier === 1 ? 0.38 : 0, duration: 0.4, delay, ease: 'power2.inOut' });
+        const nm = el.querySelector('.fn-name');
+        if (nm) gsap.to(nm, { opacity: nameIdle(font.tier), scale: 1, duration: 0.4, delay, ease: 'power2.inOut' });
       });
-
+      // Keep keyboard users where they were
+      if (prev) later(() => nodeRefs.current.get(prev)?.focus({ preventScroll: true }), 50);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.anchorId, w, h]);
 
   // ── Paired state — dim the field ─────────────────────────────────────────────
   useEffect(() => {
+    const was = prevMode.current;
+    prevMode.current = state.mode;
     if (state.mode === 'paired') {
       setConnections([]);
+      setTooltip(null);
       FONT_UNIVERSE.forEach(font => {
         const el = nodeRefs.current.get(font.id);
         if (el) gsap.to(el, { opacity: 0.08, duration: 0.4, ease: 'power2.inOut' });
       });
-    } else if (state.mode === 'anchored' && state.anchorId) {
-      // Returning from paired to anchored — restore orbit/periphery opacities
+    } else if (state.mode === 'anchored' && state.anchorId && was === 'paired') {
       const partners = COMPAT_MAP.get(state.anchorId) ?? [];
-      const topIds   = new Set(partners.slice(0, 12).map(p => p.id));
+      const topIds   = new Set(partners.slice(0, ORBIT_COUNT).map(p => p.id));
       FONT_UNIVERSE.forEach(font => {
         const el = nodeRefs.current.get(font.id);
         if (!el) return;
@@ -745,35 +767,43 @@ export function SpatialMap({ state, onSelect, onHover }: Props) {
           gsap.to(el, { opacity: 1, duration: 0.4 });
         } else if (topIds.has(font.id)) {
           const i = partners.findIndex(p => p.id === font.id);
-          gsap.to(el, { opacity: i < 5 ? 1 : 0.8, duration: 0.4 });
+          gsap.to(el, { opacity: i < INNER_COUNT ? 1 : 0.8, duration: 0.4 });
         } else {
-          gsap.to(el, { opacity: 0.15, duration: 0.4 });
+          gsap.to(el, { opacity: PERIPHERY_OPACITY, duration: 0.4 });
         }
       });
+      const anchorFont = FONT_MAP.get(state.anchorId);
+      if (anchorFont) later(() => setConnections(buildConnections(anchorFont, { x: w * 0.5, y: h * 0.5 })), 300);
+      // Return focus to the partner that opened the specimen
+      const pid = lastPartnerId.current;
+      if (pid) later(() => nodeRefs.current.get(pid)?.focus({ preventScroll: true }), 60);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.mode]);
 
-  // ── Click handler ─────────────────────────────────────────────────────────────
-  const handleClick = useCallback((id: string) => {
+  // ── Click / Enter ─────────────────────────────────────────────────────────────
+  const handleActivate = useCallback((id: string) => {
+    // While anchored, only the anchor and its partners respond
+    if (modeRef.current === 'anchored' && id !== anchorRef.current && !orbitPosRef.current.has(id)) return;
     onSelect(id);
   }, [onSelect]);
+
+  const anchorName = state.anchorId ? FONT_MAP.get(state.anchorId)?.name : '';
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'var(--bg)' }}
+      inert={state.mode === 'paired'}
     >
-      {/* SVG layer — ring guides beneath connection lines */}
       <svg
         ref={svgRef}
         width={w}
         height={h}
+        aria-hidden="true"
         style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'visible' }}
       >
-        {/* ring guides and connections — shockwave moved to HTML layer below */}
-
-        {/* Faint concentric ring guides — echo the layout structure */}
+        {/* Faint concentric ring guides — decorative */}
         {[0.18, 0.36, 0.54, 0.72, 0.90].map((frac, i) => (
           <circle
             key={`ring-${i}`}
@@ -791,9 +821,10 @@ export function SpatialMap({ state, onSelect, onHover }: Props) {
         ))}
       </svg>
 
-      {/* Shockwave ring — CSS div so React re-renders can't reset GSAP's transform mid-animation */}
+      {/* Shockwave ring */}
       <div
         ref={shockwaveRef}
+        aria-hidden="true"
         style={{
           position: 'fixed',
           width: 440,
@@ -807,9 +838,13 @@ export function SpatialMap({ state, onSelect, onHover }: Props) {
         }}
       />
 
-      {/* HTML nameplate layer */}
-      <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}>
-        {FONT_UNIVERSE.map(font => {
+      {/* Font layer */}
+      <div
+        role="group"
+        aria-label="Font map"
+        style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
+      >
+        {orderedFonts.map(font => {
           const pos = positions.get(font.id) ?? { x: 0, y: 0 };
           return (
             <FontNameplate
@@ -818,70 +853,61 @@ export function SpatialMap({ state, onSelect, onHover }: Props) {
               x={pos.x}
               y={pos.y}
               nodeRef={setNodeRef(font.id)}
-              onClick={() => handleClick(font.id)}
-              onPointerEnter={() => handlePointerEnter(font.id)}
-              onPointerLeave={() => handlePointerLeave(font.id)}
+              onActivate={handleActivate}
+              onEnter={handleEnter}
+              onLeave={handleLeave}
             />
           );
         })}
       </div>
 
-      {/* Partner annotation tooltip */}
       {tooltip && <PartnerTooltip key={tooltip.partnerId} tt={tooltip} />}
 
-      {/* Anchored HUD — bottom-center pill */}
+      {/* Anchored bar — what to do next, and a real way back */}
       {state.mode === 'anchored' && (
-        <div style={{
-          position: 'fixed',
-          bottom: '4%',
-          left: '50%',
-          transform: 'translateX(-50%)',
-          fontFamily: 'var(--font-ui)',
-          fontSize: 11,
-          color: 'var(--ink)',
-          opacity: 0.6,
-          pointerEvents: 'none',
-          letterSpacing: '0.10em',
-          textTransform: 'uppercase',
-          background: 'rgba(10,10,10,0.75)',
-          padding: '7px 16px',
-          borderRadius: 3,
-          border: '1px solid rgba(236,233,228,0.14)',
-          whiteSpace: 'nowrap',
-        }}>
-          click a partner to pair &nbsp;·&nbsp; esc to exit
+        <div className="anchor-bar">
+          <button className="ts-btn" onClick={onBack} aria-label="Back to all fonts">
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M12 7H2M6 3L2 7l4 4" fill="none" stroke="currentColor" strokeWidth="1.5"/></svg>
+            All fonts
+          </button>
+          <span className="anchor-bar__hint">Pick a partner for {anchorName}</span>
         </div>
       )}
+
+      <div className="sr-only" aria-live="polite">{announce}</div>
     </div>
   );
 }
 
 // ── AnimatedConnection — draws in on mount ────────────────────────────────────
-// Annotation text is NOT rendered here — it lives in PartnerTooltip near the node.
 function AnimatedConnection({ conn }: { conn: ConnectionLine }) {
   const pathRef  = useRef<SVGPathElement>(null);
   const dot1Ref  = useRef<SVGCircleElement>(null);
   const dot2Ref  = useRef<SVGCircleElement>(null);
 
-  // Parse start/end from path ("M x1 y1 Q ...")
   const parts = conn.path.split(' ');
   const x1 = parseFloat(parts[1]);
   const y1 = parseFloat(parts[2]);
-  // End is last two tokens
   const x2 = parseFloat(parts[parts.length - 2]);
   const y2 = parseFloat(parts[parts.length - 1]);
 
   useEffect(() => {
-    if (!pathRef.current) return;
-    const len = conn.dashLen;
-
-    // Draw in
-    gsap.fromTo(pathRef.current,
-      { strokeDasharray: len, strokeDashoffset: len, opacity: 0.55 },
-      { strokeDashoffset: 0, duration: 0.45, ease: 'power2.out', delay: conn.delay },
-    );
-
-    // Dots pop in when line reaches endpoint
+    const path = pathRef.current;
+    if (!path) return;
+    if (conn.dashed) {
+      // Dashed lines keep their dash pattern, so they fade in instead of drawing
+      path.style.strokeDasharray = DASH;
+      path.style.strokeDashoffset = '0';
+      gsap.fromTo(path, { opacity: 0 }, { opacity: 0.9, duration: 0.45, ease: 'power2.out', delay: conn.delay });
+    } else {
+      // Measure the real curve so the line always draws all the way to the font
+      const len = path.getTotalLength?.() || conn.dashLen;
+      path.style.strokeDasharray = `${len}`;
+      gsap.fromTo(path,
+        { strokeDashoffset: len, opacity: 0.9 },
+        { strokeDashoffset: 0, duration: 0.45, ease: 'power2.out', delay: conn.delay },
+      );
+    }
     if (dot1Ref.current) {
       gsap.fromTo(dot1Ref.current,
         { scale: 0, transformOrigin: 'center' },
@@ -903,13 +929,13 @@ function AnimatedConnection({ conn }: { conn: ConnectionLine }) {
         d={conn.path}
         fill="none"
         stroke={conn.color}
-        strokeWidth={1}
-        opacity={0.55}
-        strokeDasharray={conn.dashLen}
-        strokeDashoffset={conn.dashLen}
+        strokeWidth={1.4}
+        opacity={0.9}
+        strokeDasharray={conn.dashed ? DASH : conn.dashLen}
+        strokeDashoffset={conn.dashed ? 0 : conn.dashLen}
       />
-      <circle ref={dot1Ref} cx={x1} cy={y1} r={2.5} fill={conn.color} />
-      <circle ref={dot2Ref} cx={x2} cy={y2} r={2.5} fill={conn.color} />
+      <circle ref={dot1Ref} cx={x1} cy={y1} r={3} fill={conn.color} />
+      <circle ref={dot2Ref} cx={x2} cy={y2} r={3} fill={conn.color} />
     </g>
   );
 }

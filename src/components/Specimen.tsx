@@ -2,42 +2,51 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import gsap from 'gsap';
 import { FONT_UNIVERSE } from '../data/universe';
 import type { UniverseFont } from '../data/universe';
-import { rationaleSentence, annotationCopy, relType, REL_COLORS } from '../data/compat';
+import { rationaleSentence, annotationCopy, relType, REL_COLORS, bothDevanagari } from '../data/compat';
 
-// ── Fixed content pool (spec §10.2) ──────────────────────────────────────────
+// ── Fixed content pool ────────────────────────────────────────────────────────
 const LOCKUPS = [
-  { kicker: 'FIELD NOTES · TYPE',   headline: 'Letters carry weather',  deck: 'Every typeface arrives with a climate of its own — the pairing decides the season.' },
-  { kicker: 'SPECIMEN NO. 4',       headline: 'Two voices, one page',   deck: 'A headline speaks; a paragraph listens. Good pairs argue in private and agree in public.' },
-  { kicker: 'ON CONTRAST',          headline: 'Friction makes the fit', deck: 'The strongest pairings share a skeleton and disagree about everything else.' },
-  { kicker: 'THE READING ROOM',     headline: 'Built to disappear',     deck: 'Display type earns the glance. Text type earns the hour. This page needs both.' },
-  { kicker: 'PRESSED & PROOFED',    headline: 'Ink remembers the hand', deck: 'Before the pixel there was the pen, and both of these faces know it.' },
+  { kicker: 'Field notes · Type',   headline: 'Letters carry weather',  deck: 'Every typeface arrives with a climate of its own; the pairing decides the season.' },
+  { kicker: 'Specimen no. 4',       headline: 'Two voices, one page',   deck: 'A headline speaks; a paragraph listens. Good pairs argue in private and agree in public.' },
+  { kicker: 'On contrast',          headline: 'Friction makes the fit', deck: 'The strongest pairings share a skeleton and disagree about everything else.' },
+  { kicker: 'The reading room',     headline: 'Built to disappear',     deck: 'Display type earns the glance. Text type earns the hour. This page needs both.' },
+  { kicker: 'Pressed & proofed',    headline: 'Ink remembers the hand', deck: 'Before the pixel there was the pen, and both of these faces know it.' },
 ];
 
-// Deterministic hash for lockup selection
+const HINDI_HEADLINE = 'टाइप बोलता है';
+const HINDI_DECK = 'दो लिपियाँ, एक आवाज़।';
+const HINDI_PARAGRAPH = 'अनुच्छेद वह जगह है जहाँ टाइपफ़ेस प्रदर्शन बंद कर काम शुरू करता है। ';
+const DEVA_ROWS = ['क ख ग घ ङ च छ ज झ ञ', 'ट ठ ड ढ ण त थ द ध न', 'प फ ब भ म य र ल व श ष स ह'];
+const DEVA_MATRAS = 'का कि की कु कू के कै को कौ कं कः';
+
+const RUNNING_PARAGRAPH = `The paragraph is where a typeface stops performing and starts working. At this size nobody admires letterforms; they fall through them into meaning. Count the fonts that survive this: the honest x-height, the even color, the rhythm that never once asks to be noticed.`;
+
+const WEIGHTS: { wt: number; name: string }[] = [
+  { wt: 400, name: 'Regular' },
+  { wt: 500, name: 'Medium' },
+  { wt: 700, name: 'Bold' },
+];
+
 function hashStr(s: string): number {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
   return h;
 }
 
-// ── Role assignment (spec §10) ────────────────────────────────────────────────
-function assignRoles(
-  anchorFont: UniverseFont,
-  partnerFont: UniverseFont,
-): { display: UniverseFont; text: UniverseFont } {
-  if (anchorFont.displayAffinity >= partnerFont.displayAffinity) {
-    return { display: anchorFont, text: partnerFont };
-  }
-  return { display: partnerFont, text: anchorFont };
+// The more expressive face leads; Swap roles flips it, even for equal faces.
+function assignRoles(a: UniverseFont, b: UniverseFont, swapped: boolean) {
+  const aLeads = a.displayAffinity >= b.displayAffinity;
+  const display = aLeads !== swapped ? a : b;
+  const text = display === a ? b : a;
+  return { display, text };
 }
 
-// ── Structure phrase from annotationCopy ──────────────────────────────────────
 function structurePhrase(a: UniverseFont, b: UniverseFont): string {
-  const parts = annotationCopy(a, b).split(' · ');
-  return parts[1] ?? '';
+  const p = annotationCopy(a, b).split(' · ')[1] ?? '';
+  return p.charAt(0).toUpperCase() + p.slice(1);
 }
 
-const RUNNING_PARAGRAPH = `"The paragraph is where a typeface stops performing and starts working. At this size nobody admires letterforms; they fall through them into meaning. Count the fonts that survive this — the honest x-height, the even color, the rhythm that never once asks to be noticed."`;
+const ff = (f: UniverseFont, fallback = 'serif') => `'${f.name}', ${fallback}`;
 
 interface Props {
   anchorId: string;
@@ -46,453 +55,220 @@ interface Props {
 }
 
 export function Specimen({ anchorId, partnerId, onEscape }: Props) {
-  const wrapRef      = useRef<HTMLDivElement>(null);
-  const ruleTopRef   = useRef<HTMLDivElement>(null);
-  const ruleBotRef   = useRef<HTMLDivElement>(null);
-  const kickerRef    = useRef<HTMLDivElement>(null);
-  const headlineRef  = useRef<HTMLDivElement>(null);
-  const deckRef      = useRef<HTMLDivElement>(null);
-  const bandBRef     = useRef<HTMLDivElement>(null);
-  const footerRef    = useRef<HTMLDivElement>(null);
+  const wrapRef     = useRef<HTMLDivElement>(null);
+  const backRef     = useRef<HTMLButtonElement>(null);
+  const ruleRef     = useRef<HTMLDivElement>(null);
+  const kickerRef   = useRef<HTMLDivElement>(null);
+  const headlineRef = useRef<HTMLDivElement>(null);
+  const deckRef     = useRef<HTMLDivElement>(null);
+  const bandBRef    = useRef<HTMLDivElement>(null);
+  const footerRef   = useRef<HTMLDivElement>(null);
 
   const [rolesSwapped, setRolesSwapped] = useState(false);
-  const [editingHeadline, setEditingHeadline] = useState(true);
 
-  const anchorFont  = FONT_UNIVERSE.find(f => f.id === anchorId)!;
-  const partnerFont = FONT_UNIVERSE.find(f => f.id === partnerId)!;
-  if (!anchorFont || !partnerFont) return null;
+  const anchorFont  = FONT_UNIVERSE.find(f => f.id === anchorId);
+  const partnerFont = FONT_UNIVERSE.find(f => f.id === partnerId);
 
-  const { display, text } = rolesSwapped
-    ? { display: partnerFont.displayAffinity >= anchorFont.displayAffinity ? anchorFont : partnerFont,
-        text:    partnerFont.displayAffinity >= anchorFont.displayAffinity ? partnerFont : anchorFont }
-    : assignRoles(anchorFont, partnerFont);
-
-  const lockupIdx = hashStr(anchorId + partnerId) % 5;
-  const lockup    = LOCKUPS[lockupIdx];
-  const rt        = relType(display, text);
-  const color     = REL_COLORS[rt];
-  const dHG       = Math.abs(display.humanistGeometric - text.humanistGeometric);
-
-  const isIndic = display.indic || text.indic;
-
-  // ── Entrance choreography (spec §10.5) ────────────────────────────────────
+  // ── Entrance choreography ─────────────────────────────────────────────────
   useEffect(() => {
     if (!wrapRef.current) return;
     const ctx = gsap.context(() => {
       const tl = gsap.timeline();
-
-      // t=0: hairline rules draw from center
-      tl.fromTo([ruleTopRef.current, ruleBotRef.current],
-        { scaleX: 0 },
-        { scaleX: 1, duration: 0.5, ease: 'power2.out', stagger: 0 },
-        0);
-
-      // t=0.15: kicker
-      tl.fromTo(kickerRef.current,
-        { opacity: 0, y: 12 },
-        { opacity: 1, y: 0,  duration: 0.4, ease: 'power2.out' },
-        0.15);
-
-      // t=0.25: headline words (per-word clip reveal)
+      tl.fromTo(ruleRef.current, { scaleX: 0 }, { scaleX: 1, duration: 0.5, ease: 'power2.out' }, 0);
+      tl.fromTo(kickerRef.current, { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.4, ease: 'power2.out' }, 0.15);
       if (headlineRef.current) {
-        const words = headlineRef.current.querySelectorAll('.headline-word');
+        const words = headlineRef.current.querySelectorAll('.headline-word > span');
         tl.fromTo(words,
-          { yPercent: 100, opacity: 0 },
-          { yPercent: 0, opacity: 1, duration: 0.7, ease: 'power4.out', stagger: 0.06 },
+          { yPercent: 110 },
+          { yPercent: 0, duration: 0.7, ease: 'power4.out', stagger: 0.06 },
           0.25);
       }
-
-      // t=0.55: deck
-      tl.fromTo(deckRef.current,
-        { opacity: 0, y: 8 },
-        { opacity: 1, y: 0, duration: 0.5, ease: 'power2.out' },
-        0.55);
-
-      // t=0.7: anatomy bands
-      tl.fromTo(bandBRef.current,
-        { opacity: 0, y: 16 },
-        { opacity: 1, y: 0,  duration: 0.6, ease: 'power3.out' },
-        0.7);
-
-      // t=1.1: footer
-      tl.fromTo(footerRef.current,
-        { opacity: 0 },
-        { opacity: 1, duration: 0.4, ease: 'power2.out' },
-        1.1);
-
-      // After animation settles, focus headline with cursor at end
-      tl.call(() => {
-        const el = headlineRef.current;
-        if (!el) return;
-        el.focus();
-        const range = document.createRange();
-        const sel = window.getSelection();
-        range.selectNodeContents(el);
-        range.collapse(false); // false = end
-        sel?.removeAllRanges();
-        sel?.addRange(range);
-      }, [], 1.6);
+      tl.fromTo(deckRef.current, { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.5, ease: 'power2.out' }, 0.55);
+      tl.fromTo(bandBRef.current, { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.6, ease: 'power3.out' }, 0.7);
+      tl.fromTo(footerRef.current, { opacity: 0 }, { opacity: 1, duration: 0.4, ease: 'power2.out' }, 1.0);
     }, wrapRef);
-
     return () => ctx.revert();
   }, [anchorId, partnerId, rolesSwapped]);
 
-  // ── Escape key ───────────────────────────────────────────────────────────────
+  // Move focus into the dialog when it opens
+  useEffect(() => {
+    backRef.current?.focus({ preventScroll: true });
+    wrapRef.current?.scrollTo({ top: 0 });
+  }, [anchorId, partnerId]);
+
+  // ── Escape: first stops editing the headline, then closes ─────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (editingHeadline && headlineRef.current) {
-          headlineRef.current.blur();
-          setEditingHeadline(false);
-        } else {
-          onEscape();
-        }
+      if (e.key !== 'Escape') return;
+      if (document.activeElement === headlineRef.current) {
+        headlineRef.current?.blur();
+        backRef.current?.focus({ preventScroll: true });
+      } else {
+        onEscape();
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [onEscape, editingHeadline]);
-
-  const headlineWords = (isIndic ? 'टाइप बोलता है' : lockup.headline).split(' ');
+  }, [onEscape]);
 
   const handleSwap = useCallback(() => setRolesSwapped(r => !r), []);
+
+  if (!anchorFont || !partnerFont) return null;
+
+  const { display, text } = assignRoles(anchorFont, partnerFont, rolesSwapped);
+  const lockup = LOCKUPS[hashStr(anchorId + partnerId) % LOCKUPS.length];
+  const rt     = relType(display, text);
+  const color  = REL_COLORS[rt];
+  const dHG    = Math.abs(display.humanistGeometric - text.humanistGeometric);
+  const tension = Math.min(dHG / 2, 1);
+
+  // Devanagari is only ever set in a face that actually has it
+  const headlineHindi = display.indic;
+  const headline = headlineHindi ? HINDI_HEADLINE : lockup.headline;
+  const words = headline.split(' ');
+
+  let overlay: { a: string; b: string; label: string };
+  if (display.indic && text.indic) overlay = { a: 'क', b: 'क', label: 'Devanagari at the same point size' };
+  else if (display.indic || text.indic) overlay = { a: display.indic ? 'क' : 'k', b: text.indic ? 'क' : 'k', label: 'Headline stroke against the Latin x-height' };
+  else overlay = { a: 'x', b: 'x', label: 'x-height at the same point size' };
+
+  const titleId = 'specimen-title';
 
   return (
     <div
       ref={wrapRef}
       className="specimen-overlay"
-      style={{ background: 'var(--bg)' }}
-      role="region"
-      aria-label={`Type specimen: ${display.name} paired with ${text.name}`}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
     >
-      {/* Fixed exit button — top-left, always reachable */}
-      <button
-        onClick={onEscape}
-        aria-label="Exit specimen, return to font map"
-        style={{
-          position: 'fixed',
-          top: 24,
-          left: 32,
-          fontFamily: 'var(--font-ui)',
-          fontSize: 11,
-          color: 'var(--ink)',
-          letterSpacing: '0.12em',
-          textTransform: 'uppercase',
-          border: '1px solid var(--hairline)',
-          padding: '9px 16px',
-          background: 'transparent',
-          cursor: 'pointer',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-          zIndex: 10,
-          opacity: 0.75,
-        }}
-      >
-        ← Back
-      </button>
+      {/* ── Top bar ─────────────────────────────────────────────────────── */}
+      <div className="sp-topbar">
+        <button ref={backRef} className="ts-btn" onClick={onEscape} aria-label="Back to suggested partners">
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M12 7H2M6 3L2 7l4 4" fill="none" stroke="currentColor" strokeWidth="1.5"/></svg>
+          Back
+        </button>
+        <h2 id={titleId} className="sp-pairname">
+          {display.name} <span aria-hidden="true">+</span><span className="sr-only">with</span> {text.name}
+        </h2>
+      </div>
+      <div ref={ruleRef} className="sp-rule" aria-hidden="true" />
 
-      {/* Top hairline rule */}
-      <div ref={ruleTopRef} style={{
-        position: 'absolute', top: 0, left: '6vw', right: '6vw',
-        height: 1, background: 'var(--hairline)',
-        transformOrigin: 'center', transform: 'scaleX(0)',
-      }} />
-
-      {/* ── BAND 1 · COMPOSED LINE ────────────────────────────────────────── */}
-      <div style={{
-        height: '38vh', display: 'flex', flexDirection: 'column',
-        justifyContent: 'center', padding: '80px 6vw 0', overflow: 'hidden',
-        boxSizing: 'border-box',
-      }}>
-        {/* Kicker */}
-        <div ref={kickerRef} style={{
-          fontFamily: `'${text.name}', sans-serif`,
-          fontSize: 11, letterSpacing: '0.2em',
-          textTransform: 'uppercase', color: 'var(--ink-dim)',
-          marginBottom: 16, opacity: 0,
-        }}>
+      {/* ── Band 1 · composed line ─────────────────────────────────────── */}
+      <section className="sp-band1" aria-label="Composed headline">
+        <div ref={kickerRef} className="sp-kicker" style={{ fontFamily: ff(text, 'sans-serif') }}>
           {lockup.kicker}
         </div>
 
-        {/* Headline — contenteditable, per-word clip */}
         <div
+          key={headline}
           ref={headlineRef}
+          className="sp-headline"
           contentEditable
           suppressContentEditableWarning
-          onFocus={() => setEditingHeadline(true)}
-          onBlur={() => setEditingHeadline(false)}
-          style={{
-            fontFamily: `'${display.name}', serif`,
-            fontSize: 'clamp(64px, 9vw, 128px)',
-            color: 'var(--ink)', lineHeight: 1.02,
-            marginBottom: 20, outline: 'none',
-            cursor: 'text', position: 'relative',
-          }}
+          role="textbox"
+          aria-label="Headline, editable. Type to try your own words."
+          lang={headlineHindi ? 'hi' : undefined}
+          spellCheck={false}
+          style={{ fontFamily: ff(display) }}
         >
-          {headlineWords.map((word, i) => (
-            <span
-              key={i}
-              className="headline-word"
-              style={{
-                display: 'inline-block', overflow: 'hidden',
-                marginRight: i < headlineWords.length - 1 ? '0.25em' : 0,
-              }}
-            >
-              {word}
+          {words.map((word, i) => (
+            <span key={`${word}-${i}`}>
+              <span className="headline-word"><span>{word}</span></span>
+              {i < words.length - 1 ? ' ' : null}
             </span>
           ))}
         </div>
 
-        {/* Deck */}
-        <div ref={deckRef} style={{
-          fontFamily: `'${text.name}', serif`,
-          fontSize: 18, lineHeight: 1.5,
-          color: 'var(--ink-dim)', maxWidth: '52ch', opacity: 0,
-        }}>
-          {isIndic
-            ? 'दो लिपियाँ, एक आवाज़ — two scripts, one voice.'
-            : lockup.deck}
-        </div>
-      </div>
-
-      {/* ── BAND 2 · ANATOMY COLUMNS ──────────────────────────────────────── */}
-      <div ref={bandBRef} style={{
-        height: '44vh', display: 'grid',
-        gridTemplateColumns: '1fr 1px 1fr',
-        padding: '0 6vw', opacity: 0,
-      }}>
-        {/* Display column */}
-        <div style={{ paddingRight: '3vw', overflow: 'hidden', paddingTop: 24 }}>
-          {/* Alphabet waterfall */}
-          {isIndic ? (
+        <div ref={deckRef} className="sp-deck">
+          {text.indic ? (
             <>
-              <div style={{ fontFamily: `'${display.name}', serif`, fontSize: 40, color: 'var(--ink)', lineHeight: 1.2 }}>
-                क ख ग घ ङ च छ ज झ ञ
-              </div>
-              <div style={{ fontFamily: `'${display.name}', serif`, fontSize: 40, color: 'var(--ink)', lineHeight: 1.2 }}>
-                ट ठ ड ढ ण त थ द ध न
-              </div>
-              <div style={{ fontFamily: `'${display.name}', serif`, fontSize: 40, color: 'var(--ink)', lineHeight: 1.2 }}>
-                प फ ब भ म य र ल व श ष स ह
-              </div>
-              <div style={{ fontFamily: `'${display.name}', serif`, fontSize: 30, color: 'var(--ink-dim)', lineHeight: 1.4, marginTop: 8 }}>
-                का कि की कु कू के कै को कौ कं कः
-              </div>
+              <span lang="hi" style={{ fontFamily: ff(text) }}>{HINDI_DECK}</span>{' '}
+              <span style={{ fontFamily: ff(text) }}>Two scripts, one voice.</span>
             </>
           ) : (
-            <>
-              <div style={{ fontFamily: `'${display.name}', serif`, fontSize: 40, color: 'var(--ink)', lineHeight: 1.2 }}>
-                ABCDEFGHIJKLM
-              </div>
-              <div style={{ fontFamily: `'${display.name}', serif`, fontSize: 40, color: 'var(--ink)', lineHeight: 1.2 }}>
-                NOPQRSTUVWXYZ
-              </div>
-              <div style={{ fontFamily: `'${display.name}', serif`, fontSize: 30, color: 'var(--ink)', lineHeight: 1.4 }}>
-                abcdefghijklmnopqrstuvwxyz
-              </div>
-              <div style={{ fontFamily: `'${display.name}', serif`, fontSize: 30, color: 'var(--ink-dim)', lineHeight: 1.4 }}>
-                0123456789 !?&%@·—
-              </div>
-            </>
+            <span style={{ fontFamily: ff(text) }}>{headlineHindi ? 'Two scripts, one voice.' : lockup.deck}</span>
           )}
-          {/* Emphasis weight row */}
-          <div style={{ display: 'flex', gap: 16, marginTop: 12, flexWrap: 'wrap' }}>
-            {[300, 400, 500, 700, 900].map(wt => (
-              <span key={wt} style={{
-                fontFamily: `'${display.name}', serif`,
-                fontWeight: wt, fontSize: 26,
-                color: 'var(--ink)',
-              }}>Emphasis</span>
+          <p className="sp-hint">Click the headline to type your own words.</p>
+        </div>
+      </section>
+
+      {/* ── Band 2 · anatomy ───────────────────────────────────────────── */}
+      <section ref={bandBRef} className="sp-band2" aria-label="Anatomy">
+        {/* Display column */}
+        <div className="sp-col">
+          <div className="sp-label">{display.name} · display</div>
+          {display.indic ? (
+            <div lang="hi" style={{ fontFamily: ff(display) }}>
+              {DEVA_ROWS.map(r => <div key={r} className="sp-alpha">{r}</div>)}
+              <div className="sp-alpha sp-alpha--sm sp-dim">{DEVA_MATRAS}</div>
+            </div>
+          ) : (
+            <div style={{ fontFamily: ff(display) }}>
+              <div className="sp-alpha">ABCDEFGHIJKLM</div>
+              <div className="sp-alpha">NOPQRSTUVWXYZ</div>
+              <div className="sp-alpha sp-alpha--sm">abcdefghijklmnopqrstuvwxyz</div>
+              <div className="sp-alpha sp-alpha--sm sp-dim">0123456789 !?&amp;%@</div>
+            </div>
+          )}
+          <div className="sp-weights">
+            {WEIGHTS.map(({ wt, name }) => (
+              <div key={wt}>
+                <div style={{ fontFamily: ff(display), fontWeight: wt, fontSize: 26, fontSynthesis: 'none' }}>Emphasis</div>
+                <div className="sp-caption">{name}</div>
+              </div>
             ))}
           </div>
         </div>
 
-        {/* Hairline divider + annotation chips */}
-        <div style={{ position: 'relative', background: 'var(--hairline)' }}>
-          {/* X-height overlay chip at 25% */}
-          <ChipWithOverlay
-            top="25%"
-            display={display}
-            text={text}
-            color={color}
-            label={isIndic ? 'shirorekha meets baseline' : 'x-height, same point size'}
-            glyphA={isIndic ? 'क' : 'x'}
-            glyphB={isIndic ? 'k' : 'x'}
-            colorA="var(--rel-contrast)"
-            colorB="var(--rel-kinship)"
-          />
-          {/* Structure chip at 50% */}
-          <div style={{
-            position: 'absolute', top: '50%', left: '50%',
-            transform: 'translate(-50%, -50%)',
-            fontFamily: 'var(--font-ui)', fontSize: 10,
-            letterSpacing: '0.06em', color, whiteSpace: 'normal',
-            textAlign: 'center', maxWidth: 'calc(6vw - 12px)',
-            background: '#0a0a0a', padding: '2px 6px',
-          }}>
-            {structurePhrase(display, text)}
-          </div>
-          {/* Weight chip at 75% */}
-          <div style={{
-            position: 'absolute', top: '75%', left: '50%',
-            transform: 'translate(-50%, -50%)',
-            fontFamily: 'var(--font-ui)', fontSize: 10,
-            letterSpacing: '0.06em', color, whiteSpace: 'normal',
-            textAlign: 'center', maxWidth: 'calc(6vw - 12px)',
-            background: '#0a0a0a', padding: '2px 6px',
-          }}>
-            weight {display.visualWeight} against {text.visualWeight}
-          </div>
+        {/* Middle notes */}
+        <div className="sp-notes">
+          <figure className="sp-note">
+            <div className="sp-overlay" aria-hidden="true">
+              <span style={{ fontFamily: ff(display), color: 'var(--rel-contrast)' }}>{overlay.a}</span>
+              <span style={{ fontFamily: ff(text), color: 'var(--rel-kinship)' }}>{overlay.b}</span>
+            </div>
+            <figcaption style={{ color }}>{overlay.label}</figcaption>
+          </figure>
+          <p className="sp-note" style={{ color }}>{structurePhrase(display, text)}</p>
+          <p className="sp-note" style={{ color }}>Weight {display.visualWeight} against {text.visualWeight}</p>
+          {bothDevanagari(display, text) && <p className="sp-note" style={{ color }}>Both have Devanagari</p>}
         </div>
 
         {/* Text column */}
-        <div style={{ paddingLeft: '3vw', overflow: 'hidden', paddingTop: 24 }}>
-          {/* Running paragraph */}
-          <div style={{
-            fontFamily: `'${text.name}', serif`,
-            fontSize: 15, lineHeight: 1.6,
-            color: 'rgba(236,233,228,0.85)', maxWidth: '44ch',
-          }}>
-            {isIndic && text.indic && (
-              <span>अनुच्छेद वह जगह है जहाँ टाइपफ़ेस प्रदर्शन बंद कर काम शुरू करता है। </span>
-            )}
+        <div className="sp-col">
+          <div className="sp-label">{text.name} · text</div>
+          <p className="sp-para" style={{ fontFamily: ff(text) }}>
+            {text.indic && <span lang="hi">{HINDI_PARAGRAPH}</span>}
             {RUNNING_PARAGRAPH}
-          </div>
-
-          {/* UI fragment */}
-          <div style={{ marginTop: 20, borderTop: '1px solid var(--hairline)', paddingTop: 16 }}>
-            <div style={{ fontFamily: `'${text.name}', serif`, fontSize: 13, color: 'var(--ink-dim)', marginBottom: 6 }}>
-              Account balance
-            </div>
-            <div style={{ fontFamily: `'${text.name}', serif`, fontSize: 22, color: 'var(--ink)' }}>
-              ₹ 48,206.19
-            </div>
-          </div>
-
-          {/* Tabular numerals */}
-          <div style={{
-            fontFamily: `'${text.name}', serif`,
-            fontSize: 14, color: 'var(--ink-dim)', marginTop: 16,
-            fontFeatureSettings: '"tnum"',
-          }}>
-            1,024 · 99.4% · 08:15:42
+          </p>
+          <div className="sp-ui" style={{ fontFamily: ff(text) }}>
+            <div className="sp-ui__label">Account balance</div>
+            <div className="sp-ui__value">₹ 48,206.19</div>
+            <div className="sp-ui__figs">1,024 · 99.4% · 08:15:42</div>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* ── BAND 3 · RATIONALE FOOTER ─────────────────────────────────────── */}
-      <div ref={footerRef} style={{
-        height: '18vh', display: 'flex',
-        alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 6vw', opacity: 0,
-      }}>
-        {/* Left — generated sentence */}
-        <div style={{
-          fontFamily: `'${text.name}', serif`,
-          fontSize: 16, lineHeight: 1.5, color: 'var(--ink)',
-          maxWidth: '52ch',
-        }}>
+      {/* ── Band 3 · rationale ─────────────────────────────────────────── */}
+      <section ref={footerRef} className="sp-footer" aria-label="Why this pair works">
+        <p className="sp-rationale" style={{ fontFamily: ff(text) }}>
           {rationaleSentence(display, text)}
-        </div>
-
-        {/* Right — controls */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 16 }}>
-          {/* Swap roles — prominent styled button */}
-          <button
-            onClick={handleSwap}
-            aria-label="Swap display and text font roles"
-            style={{
-              fontFamily: 'var(--font-ui)',
-              fontSize: 13,
-              color: 'var(--ink-dim)',
-              letterSpacing: '0.08em',
-              textTransform: 'uppercase',
-              border: '1px solid rgba(236,233,228,0.12)',
-              padding: '10px 20px',
-              background: 'transparent',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              opacity: 0.6,
-            }}
-          >
-            <span style={{ fontSize: 16 }}>⇄</span> Swap roles
+        </p>
+        <div className="sp-controls">
+          <button className="ts-btn ts-btn--primary" onClick={handleSwap}>
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5h11M10 2l3 3-3 3M14 11H3M6 8l-3 3 3 3" fill="none" stroke="currentColor" strokeWidth="1.5"/></svg>
+            Swap roles
           </button>
-
-          {/* Tension meter */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontFamily: 'var(--font-ui)', fontSize: 9, color: 'var(--ink-ghost)' }}>kin</span>
-            <div style={{ position: 'relative', width: 120, height: 1, background: 'var(--hairline)' }}>
-              <div style={{
-                position: 'absolute',
-                left: `${Math.min(dHG / 2, 1) * 100}%`,
-                top: '50%', transform: 'translate(-50%, -50%)',
-                width: 4, height: 4, borderRadius: '50%',
-                background: color,
-              }} />
+          <div className="sp-meter" role="img" aria-label={`Tension ${Math.round(tension * 100)} percent, from kin to tension`}>
+            <span aria-hidden="true">Kin</span>
+            <div className="sp-meter__track" aria-hidden="true">
+              <div className="sp-meter__dot" style={{ left: `${tension * 100}%`, background: color }} />
             </div>
-            <span style={{ fontFamily: 'var(--font-ui)', fontSize: 9, color: 'var(--ink-ghost)' }}>tension</span>
+            <span aria-hidden="true">Tension</span>
           </div>
         </div>
-      </div>
-
-      {/* Bottom hairline rule */}
-      <div ref={ruleBotRef} style={{
-        position: 'absolute', bottom: 0, left: '6vw', right: '6vw',
-        height: 1, background: 'var(--hairline)',
-        transformOrigin: 'center', transform: 'scaleX(0)',
-      }} />
-    </div>
-  );
-}
-
-// ── X-height / shirorekha overlay chip ─────────────────────────────────────────
-function ChipWithOverlay({
-  top, display, text, color, label, glyphA, glyphB, colorA, colorB,
-}: {
-  top: string;
-  display: UniverseFont;
-  text: UniverseFont;
-  color: string;
-  label: string;
-  glyphA: string;
-  glyphB: string;
-  colorA: string;
-  colorB: string;
-}) {
-  return (
-    <div style={{
-      position: 'absolute', top, left: '50%',
-      transform: 'translate(-50%, -50%)',
-      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
-    }}>
-      {/* Superimposed glyphs */}
-      <div style={{ position: 'relative', height: 64, width: 64 }}>
-        <div style={{
-          position: 'absolute', inset: 0,
-          fontFamily: `'${display.name}', serif`,
-          fontSize: 64, lineHeight: 1,
-          color: colorA, opacity: 0.45,
-          mixBlendMode: 'screen',
-        }}>{glyphA}</div>
-        <div style={{
-          position: 'absolute', inset: 0,
-          fontFamily: `'${text.name}', serif`,
-          fontSize: 64, lineHeight: 1,
-          color: colorB, opacity: 0.45,
-          mixBlendMode: 'screen',
-        }}>{glyphB}</div>
-      </div>
-      <div style={{
-        fontFamily: 'var(--font-ui)', fontSize: 10,
-        letterSpacing: '0.06em', color, whiteSpace: 'normal',
-        textAlign: 'center', maxWidth: 'calc(6vw - 12px)',
-        background: '#0a0a0a', padding: '2px 6px',
-      }}>
-        {label}
-      </div>
+      </section>
     </div>
   );
 }
