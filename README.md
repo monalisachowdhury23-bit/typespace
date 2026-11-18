@@ -1,61 +1,93 @@
-# Font Pairing Explorer
+# Typespace
 
-A spatial map of font pairings. Twenty-five typefaces sit on a dark canvas like a constellation; click one and its curated companions branch out radially, each with a rationale grounded in actual typographic reasoning — x-height relationships, stroke modulation, weight balance, optical size. Built with React, TypeScript, and GSAP on an SVG canvas.
+A spatial map of 150 typefaces. Every font sits where its character puts it, written as "Aa" in its own face. Click one and its best partners gather around it. Click a partner and the pair is set as a full specimen page you can type into.
 
-## Why this exists
+[Open it live →](https://monalisachowdhury23-bit.github.io/typespace/)
 
-Existing pairing tools share a flaw: they tell you *what* without *why*. Fontjoy generates pairings from ML embeddings — statistically plausible, unexplainable, and unaccountable when wrong. Fontpair and Pair & Compare show you lists and screenshots: here are two fonts together, decide for yourself. None of them teach. You leave with a pairing but not with judgment.
+[![Typespace: picking Cormorant Garamond and watching its partners gather](media/preview.gif)](https://monalisachowdhury23-bit.github.io/typespace/)
 
-This tool takes the opposite bet: fewer fonts, every pairing hand-curated, every rationale written to be *argued with*. If a card says a pairing works because the sans's x-height compensates for the serif's small one, you can check that claim. The rationale is the product; the constellation is just an honest way to browse relationships — pairing is a graph, and browsing a graph as a list throws away its structure.
+## Why I made it
 
-## The Indic fonts
+Most pairing tools hand you an answer without a reason. Some generate pairs from embeddings, which you can't question. Others show two fonts side by side and leave the judgement to you. Either way you leave with a pairing and no better sense of why it works.
 
-Five of the twenty-five faces — Mukta, Hind, Baloo 2, Eczar, Noto Sans — are dual-script designs carrying Devanagari alongside Latin. This is not a diversity gesture; it's a category of pairing problem Western tools ignore entirely.
+Typespace shows the reasoning. Where a font sits on the map describes it, the lines between fonts describe how they relate, and the specimen spells out the relationship in plain words: which font is the display voice, which one carries the reader, and whether they pair through kinship or tension.
 
-Bilingual interfaces are the default condition for products serving half a billion Hindi-English users, and they fail typographically in specific, describable ways: stroke weights that don't match across scripts, Devanagari sized by Latin x-height (wrong — the loop height governs), display fonts whose conjunct clusters clot at headline sizes, and English getting the personality font while the Indic script gets a system default. Each Indic pairing here addresses those mechanics directly — including practical corrections like the ~1.06× up-sizing Hind needs beside a Latin body face, or matching Clash Display to Mukta ExtraBold by apparent blackness rather than nominal weight, because the shirorekha adds density Latin doesn't have.
+It also treats Devanagari as a first-class script. Eighteen of the 150 faces carry Devanagari, and bilingual Hindi and English interfaces are an everyday reality for hundreds of millions of people. Pairing across scripts has its own problems (matching stroke weight, sizing by the headline instead of the x-height, keeping conjuncts readable at display sizes), and pairing tools rarely deal with any of them.
 
-If a pairing tool claims to be for interface designers in 2026 and can't say anything about scripts other than Latin, it's a tool for a shrinking market.
+## How it works
 
-## Design decisions
+### The map
 
-**SVG over Canvas 2D.** The nodes are *text*, rendered live in the fonts they represent — that's the whole point. SVG gives real DOM text nodes: crisp at any zoom, selectable, inspectable, and accessible (each node is a focusable element with a name, not pixels in a raster). Canvas would force reimplementing text rendering, hit-testing, and accessibility to gain performance headroom this project doesn't need — 25 nodes plus ~8 satellites is nowhere near SVG's ceiling. Choose the renderer for the content; the content here is type.
+![The idle field: 150 fonts in five rings](media/cover.jpg)
 
-**GSAP over CSS transitions.** The expand choreography is a sequenced timeline — world recedes, node asserts, pairings bloom outward with lines leading them — with interruption handling when the user clicks a second font mid-animation. CSS transitions can't express sequencing beyond `transition-delay` arithmetic, and they can't be preempted cleanly: you get whatever intermediate state the browser was in. GSAP timelines are killable, reversible, and time-scalable, which is what "click another node mid-expand" actually requires. The full motion spec lives in [`animation-spec.md`](./animation-spec.md).
+Each font has three hand-set scores: how expressive it is (display affinity, 0 to 10), how drawn or constructed it is (humanist to geometric, −1 to +1), and how heavy it looks (visual weight, 1 to 10).
 
-**A filter, not a search.** Context tags (editorial, finance, health, technology, education, branding, multilingual) filter the visible pairings; there is no search box. Search implies you know what you're looking for — but the tool's user doesn't, that's why they're here. A filter narrows a visible set without destroying spatial memory: non-matching nodes dim in place rather than disappearing, so the map stays the map. Search over 25 fonts would also be theater. The honest interaction for a small curated set is *lens*, not *query*.
+- Display affinity picks the ring. The most expressive faces sit in the middle and the workhorse text faces sit on the outside, across five rings.
+- Humanist to geometric sets the angle. Going around a ring, fonts move from drawn and calligraphic to built and rational, so neighbours on a ring are related.
+- A deterministic hash of each font's id adds a little jitter, so the map looks the same on every load and you can remember where Inter lives.
+- A soft relaxation pass pushes overlapping labels apart, while a spring pulls each font back toward its place on the ring, so tidying never moves a font into the wrong neighbourhood.
+
+Sixteen fonts are drawn larger as anchors and about fifty more sit in a middle tier. The rest are small and reveal their names on hover. That keeps 150 fonts from all competing for attention at once.
+
+### Finding partners
+
+Every pair of fonts gets a compatibility score, computed once at load (about 11,000 comparisons):
+
+- Good partners sit roughly 3 to 6 apart on display affinity, so one leads and one supports.
+- Serif with sans, display with text, and mono with serif or sans all score; two similar faces in the same role lose points.
+- Fonts score when they are close on the humanist to geometric axis (kinship) or far apart (deliberate contrast). The middle ground scores nothing.
+- Two Devanagari fonts get a bonus, and a clear difference in weight earns a little more.
+
+Hover a font and lines draw to its top five partners. Strong pairs pull the line almost straight and weaker ones let it sag, so you can read strength without a number. Line colour shows the kind of relationship: slate for kinship, amber for contrast, ember for two Devanagari faces.
+
+### Anchoring
+
+Click a font and it flies to the centre on an arc (made from two tweens on x and y with different easings). Its twelve best partners gather in two rings around it, five close and seven further out, and every other font pushes outward and fades. Click a faded font to re-anchor on it, or press Escape to send everything home.
+
+### The specimen
+
+Pick a partner and the field dims under a full-page specimen:
+
+- A composed headline in the display voice with a kicker and deck in the text voice. The headline is editable, so you can proof your own words.
+- The display font's alphabet, numerals and weights next to the text font in a running paragraph, a small interface fragment and tabular figures.
+- A live x-height overlay: a lowercase x from both fonts at the same point size, laid on top of each other.
+- A sentence describing the pair, a tension meter from kin to contrast, and a button that swaps which font leads.
+
+If either font is Devanagari, the specimen switches to a bilingual version: a Hindi headline with an English echo, the Devanagari consonants, vowel signs and numerals, and the overlay compares a Devanagari letter with a Latin one at the same size.
+
+## Details
+
+- A font only appears once its face has loaded, so nothing ever shows in a fallback font.
+- Fonts load in tiers: anchors immediately, the middle tier when the browser is idle, the rest in small batches after that.
+- Every font on the map is real HTML text set in its own face, and the connection lines are SVG underneath. All motion is GSAP on transform and opacity.
+- The field drifts slightly at rest and a few anchors pulse now and then. With reduced motion turned on, the opening animation is skipped.
+- Escape always steps back one level: specimen, then anchor, then the full map.
 
 ## Stack
 
-- **React 18 + TypeScript** — the pairing data is a typed graph (`font-data.ts`); TypeScript keeps 128 pairings honest
-- **Vite** — dev server and build
-- **GSAP 3** — all motion; timelines for expand/collapse choreography
-- **Google Fonts** — 20 of 25 families, loaded on demand per selection
-- **Fontshare** — Satoshi, Cabinet Grotesk, General Sans, Switzer, Clash Display
+React, TypeScript, Vite and GSAP. Fonts come from Google Fonts and Fontshare, so every pairing you find here is free to use. There is no backend; the font data is a typed module in `src/data/`.
 
-Fonts load lazily: the idle canvas loads only the 25 base specimens (subset to the specimen strings); a font's pairing companions load on click. Nobody pays for 60 font files to look at a landing state.
+## Run it locally
 
-## Run it
-
-```bash
-git clone <repo-url>
-cd font-pairing-explorer
+```
+git clone https://github.com/monalisachowdhury23-bit/typespace.git
+cd typespace
 npm install
 npm run dev
 ```
 
-Vite serves on `http://localhost:5173`. No environment variables, no backend — the pairing data ships as a static TypeScript module.
+`npm run build` makes a production build, and `npm run deploy` publishes it to GitHub Pages.
 
-```bash
-npm run build && npm run preview   # production build
+## Where things live
+
+```
+src/data/universe.ts          the 150 fonts and their scores
+src/data/compat.ts            compatibility score, relationship type, generated copy
+src/data/computed-layout.ts   ring layout and relaxation
+src/components/SpatialMap.tsx the map: hover, anchoring, connection lines
+src/components/Specimen.tsx   the pairing specimen
+src/hooks/useFontLoader.ts    tiered font loading
+docs/                         the design spec and the font dataset notes
 ```
 
-## Curation criteria
-
-Every font earned its place against four tests:
-
-1. **Contemporary relevance** — faces working designers actually reach for now. No Roboto, no Open Sans, no Lato; defaults teach nothing.
-2. **Distinct voice** — each font must be distinguishable from every other node at specimen size. Two near-identical grotesques waste a slot.
-3. **Pairing fertility** — a font needed at least five defensible pairings within the set. Beautiful loners were cut.
-4. **Free to use** — everything loads from Google Fonts or Fontshare, so any pairing you find here you can ship today.
-
-Pairing rationales were written one at a time, against rendered specimens, and revised where the claim didn't survive looking at the actual letterforms. Where a rationale names a number — an x-height ratio, a size compensation — it's meant to be checked.
+Made by [Monalisa Chowdhury](https://monalisachowdhury.vercel.app/).

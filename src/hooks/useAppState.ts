@@ -1,41 +1,59 @@
 import { useState, useCallback } from 'react';
-import type { AppState, Slot } from '../types';
+
+export type AppMode = 'idle' | 'anchored' | 'paired';
+
+export interface AppState {
+  mode: AppMode;
+  anchorId: string | null;   // first font selected
+  partnerId: string | null;  // second font selected (paired state)
+  hoveredId: string | null;
+}
 
 export function useAppState() {
   const [state, setState] = useState<AppState>({
-    fontA: null,
-    fontB: null,
-    lastSlot: 'A',
+    mode: 'idle',
+    anchorId: null,
+    partnerId: null,
     hoveredId: null,
   });
 
   const selectFont = useCallback((id: string) => {
     setState(s => {
-      // Already anchored — deselect
-      if (s.fontA === id) return { ...s, fontA: null, lastSlot: 'B' };
-      if (s.fontB === id) return { ...s, fontB: null, lastSlot: 'A' };
+      if (s.mode === 'idle') {
+        return { ...s, mode: 'anchored', anchorId: id };
+      }
+      if (s.mode === 'anchored') {
+        if (s.anchorId === id) {
+          // Deselect anchor → idle
+          return { mode: 'idle', anchorId: null, partnerId: null, hoveredId: s.hoveredId };
+        }
+        // Second pick → paired
+        return { ...s, mode: 'paired', partnerId: id };
+      }
+      if (s.mode === 'paired') {
+        if (s.anchorId === id || s.partnerId === id) {
+          // Clicking either paired font → back to idle
+          return { mode: 'idle', anchorId: null, partnerId: null, hoveredId: s.hoveredId };
+        }
+        // Click a periphery font → re-anchor on it
+        return { ...s, mode: 'anchored', anchorId: id, partnerId: null };
+      }
+      return s;
+    });
+  }, []);
 
-      // Fill empty slot first
-      if (!s.fontA) return { ...s, fontA: id, lastSlot: 'A' };
-      if (!s.fontB) return { ...s, fontB: id, lastSlot: 'B' };
-
-      // Both slots filled — replace the slot filled longest ago
-      const replaceSlot: Slot = s.lastSlot === 'A' ? 'B' : 'A';
-      return replaceSlot === 'A'
-        ? { ...s, fontA: id, lastSlot: 'A' }
-        : { ...s, fontB: id, lastSlot: 'B' };
+  // Escape steps back one level
+  const stepBack = useCallback(() => {
+    setState(s => {
+      if (s.mode === 'paired')   return { ...s, mode: 'anchored', partnerId: null };
+      if (s.mode === 'anchored') return { mode: 'idle', anchorId: null, partnerId: null, hoveredId: s.hoveredId };
+      return s;
     });
   }, []);
 
   const hoverFont = useCallback((id: string | null) => {
-    setState(s => ({ ...s, hoveredId: id }));
+    setState(s => s.hoveredId === id ? s : { ...s, hoveredId: id });
   }, []);
 
-  const reset = useCallback(() => {
-    setState({ fontA: null, fontB: null, lastSlot: 'A', hoveredId: null });
-  }, []);
-
-  const isPaired = !!(state.fontA && state.fontB);
-
-  return { state, selectFont, hoverFont, reset, isPaired };
+  return { state, selectFont, stepBack, hoverFont };
 }

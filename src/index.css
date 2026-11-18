@@ -1,11 +1,20 @@
+/* ── Design tokens (spec §3) ───────────────────────────────────────────────── */
 :root {
-  --bg: #0a0a0a;
-  --text-primary: #f0ede8;
-  --text-dim: rgba(240, 237, 232, 0.2);
-  --text-muted: rgba(240, 237, 232, 0.45);
-  --node-hover-scale: 1.1;
+  --bg:           #0a0a0a;
+  --ink:          #ECE9E4;
+  --ink-dim:      rgba(236, 233, 228, 0.38);
+  --ink-ghost:    rgba(236, 233, 228, 0.14);
+  --hairline:     rgba(236, 233, 228, 0.16);
+  --rel-kinship:  #8FB0CE;
+  --rel-contrast: #D9A05B;
+  --rel-bridge:   #E06B3C;
+  --select-ring:  rgba(217, 160, 91, 0.35);
+
+  /* UI chrome font — always Switzer or system fallback */
+  --font-ui: 'Switzer', system-ui, sans-serif;
 }
 
+/* ── Reset ─────────────────────────────────────────────────────────────────── */
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -17,15 +26,80 @@ html, body, #root {
   height: 100%;
   overflow: hidden;
   background: var(--bg);
-  color: var(--text-primary);
+  color: var(--ink);
 }
 
 body {
-  font-family: sans-serif;
+  font-family: var(--font-ui);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 button {
   cursor: pointer;
   font-family: inherit;
+  background: none;
+  border: none;
+  color: inherit;
 }
+
+/* ── Nameplate layer ────────────────────────────────────────────────────────── */
+.spatial-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.spatial-layer--interactive {
+  pointer-events: auto;
+}
+
+/* ── Nameplate node ─────────────────────────────────────────────────────────── */
+.fn-node {
+  position: absolute;
+  left: 0;
+  top: 0;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  pointer-events: auto;
+  /* transform set via GSAP; origin at top-left */
+  transform-origin: left center;
+}
+
+/* ── Axis whisper labels (spec §2.5) ────────────────────────────────────────── */
+.axis-label {
+  position: fixed;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(236, 233, 228, 0.22);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ── Specimen overlay ───────────────────────────────────────────────────────── */
+.specimen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+/* ── Connection annotation chip (paint-order trick) ──────────────────────────── */
+.conn-annotation {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  paint-order: stroke fill;
+  -webkit-text-stroke: 6px #0a0a0a;
+  pointer-events: none;
+}
+
+/* ── Scrollbar hide ─────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { display: none; }
+* { scrollbar-width: none; }
