@@ -64,6 +64,7 @@ If either font is Devanagari, the specimen switches to a bilingual version: a Hi
 - Tab moves through the map ring by ring, and focusing a font shows its partners the same way hover does. Selecting a font or opening a pair is announced to screen readers, and the specimen opens as a dialog with focus inside it.
 - Devanagari is only ever set in a face that has it, and Hindi text is marked as Hindi.
 - Escape steps back one level: out of the headline, then the specimen, then the anchor.
+- On a phone the map becomes an oval that fills the space under the intro, and partners are spaced so their names stay clear of each other and of the screen edge.
 
 ## Stack
 

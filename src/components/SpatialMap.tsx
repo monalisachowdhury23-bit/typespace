@@ -1,10 +1,10 @@
 import {
-  useRef, useCallback, useEffect, useMemo, useState, memo,
+  useRef, useCallback, useEffect, useLayoutEffect, useMemo, useState, memo,
 } from 'react';
 import gsap from 'gsap';
 import { FONT_UNIVERSE } from '../data/universe';
 import type { UniverseFont } from '../data/universe';
-import { computePositions, orbitPositions, peripheryPos } from '../data/computed-layout';
+import { computePositions, orbitPositions, peripheryPos, mapArea } from '../data/computed-layout';
 import type { NodePos } from '../data/computed-layout';
 import {
   getCompatMap, relType, REL_COLORS, annotationCopy, bothDevanagari,
@@ -29,6 +29,7 @@ const LINE_STANDOFF = 8; // px
 const DASH = '6 5';       // dashed line = both fonts carry Devanagari
 const INNER_COUNT = 5;
 const ORBIT_COUNT = 12;
+const ANCHOR_BAR_SPACE = 84; // the All fonts bar at the bottom while anchored
 
 interface ConnectionLine {
   key: string;
@@ -252,7 +253,7 @@ export function SpatialMap({ state, onSelect, onHover, onBack }: Props) {
   const ambientTweens = useRef<Map<string, gsap.core.Tween>>(new Map());
   const ambientStarted = useRef(false);
   const prevAnchorId = useRef<string | null>(null);
-  const prevSize = useRef({ w, h });
+  const prevSize = useRef({ w, h, t: 0 });
   const prevMode = useRef(state.mode);
   const lastPartnerId = useRef<string | null>(null);
   // Tracks where partners land during anchor state so connection lines draw accurately
@@ -271,23 +272,37 @@ export function SpatialMap({ state, onSelect, onHover, onBack }: Props) {
   useEffect(() => { anchorRef.current = state.anchorId; }, [state.anchorId]);
   useEffect(() => { if (state.partnerId) lastPartnerId.current = state.partnerId; }, [state.partnerId]);
 
+  // ── Room left under the intro (phones lay the map out below it) ────────────
+  const [topInset, setTopInset] = useState(0);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const el = document.querySelector('.ts-intro');
+      setTopInset(el ? Math.round(el.getBoundingClientRect().bottom) : 0);
+    };
+    measure();
+    document.fonts?.ready.then(measure);
+  }, [w, h]);
+  const idleArea = useMemo(() => mapArea(w, h, topInset), [w, h, topInset]);
+  const anchorArea = useMemo(() => mapArea(w, h, topInset, ANCHOR_BAR_SPACE), [w, h, topInset]);
+  const anchorCenter = () => ({ x: anchorArea.cx, y: anchorArea.cy });
+
   // ── Semantic positions (memoized on viewport size) ──────────────────────────
-  const positions = useMemo(() => computePositions(FONT_UNIVERSE, w, h), [w, h]);
+  const positions = useMemo(() => computePositions(FONT_UNIVERSE, w, h, idleArea), [w, h, idleArea]);
 
   // Render (and therefore tab) order follows the map: inner ring outward,
   // clockwise from twelve o'clock within each ring.
   const orderedFonts = useMemo(() => {
-    const cx = w / 2, cy = h / 2;
-    const band = Math.min(w * 0.46, h * 0.47) * 0.18;
+    const { cx, cy, rx, ry } = idleArea;
     const key = (f: UniverseFont) => {
       const p = positions.get(f.id) ?? { x: cx, y: cy };
-      const ring = Math.round(Math.hypot(p.x - cx, p.y - cy) / band);
-      let ang = Math.atan2(p.x - cx, -(p.y - cy)); // 0 at top, clockwise
+      const nx = (p.x - cx) / rx, ny = (p.y - cy) / ry;
+      const ring = Math.round(Math.hypot(nx, ny) / 0.18);
+      let ang = Math.atan2(nx, -ny); // 0 at top, clockwise
       if (ang < 0) ang += Math.PI * 2;
       return ring * 10 + ang;
     };
     return [...FONT_UNIVERSE].sort((a, b) => key(a) - key(b));
-  }, [positions, w, h]);
+  }, [positions, idleArea]);
 
   // ── Register node refs ──────────────────────────────────────────────────────
   const refCallbacks = useRef(new Map<string, (el: HTMLDivElement | null) => void>());
@@ -586,7 +601,7 @@ export function SpatialMap({ state, onSelect, onHover, onBack }: Props) {
     });
 
     const anchorBasePos = positions.get(anchorId) ?? { x: 0, y: 0 };
-    const center = { x: w * 0.5, y: h * 0.5 };
+    const center = anchorCenter();
     const anchorTarget = Math.min(w, h) < 600 ? 34 : 48;
     const anchorScale = Math.max(anchorTarget, GLYPH_SIZE[anchorFont.tier] * 1.4) / GLYPH_SIZE[anchorFont.tier];
 
@@ -640,7 +655,7 @@ export function SpatialMap({ state, onSelect, onHover, onBack }: Props) {
       const topPartnerIds = new Set(orbitPairs.map(p => p.id));
 
       orbitPosRef.current.clear();
-      const orbitTargets = orbitPositions(center, orbitPairs.map(p => p.semanticPos), w, h);
+      const orbitTargets = orbitPositions(center, orbitPairs.map(p => p.semanticPos), w, h, anchorArea);
 
       orbitPairs.forEach(({ id }, i) => {
         const el = nodeRefs.current.get(id);
@@ -674,7 +689,7 @@ export function SpatialMap({ state, onSelect, onHover, onBack }: Props) {
         const el = nodeRefs.current.get(font.id);
         if (!el) return;
         const basePos = positions.get(font.id) ?? { x: 0, y: 0 };
-        const target = peripheryPos(basePos, center, w, h);
+        const target = peripheryPos(basePos, center, w, h, anchorArea);
         stopAmbientDrift([font.id]);
         setActive(el, false);
         gsap.to(el, {
@@ -698,9 +713,9 @@ export function SpatialMap({ state, onSelect, onHover, onBack }: Props) {
   useEffect(() => {
     const prev = prevAnchorId.current;
     const next = state.anchorId;
-    const sizeChanged = prevSize.current.w !== w || prevSize.current.h !== h;
+    const sizeChanged = prevSize.current.w !== w || prevSize.current.h !== h || prevSize.current.t !== topInset;
     prevAnchorId.current = next;
-    prevSize.current = { w, h };
+    prevSize.current = { w, h, t: topInset };
 
     if (next && next !== prev) {
       layoutAnchor(next, false);
@@ -744,7 +759,7 @@ export function SpatialMap({ state, onSelect, onHover, onBack }: Props) {
       if (prev) later(() => nodeRefs.current.get(prev)?.focus({ preventScroll: true }), 50);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.anchorId, w, h]);
+  }, [state.anchorId, w, h, topInset]);
 
   // ── Paired state — dim the field ─────────────────────────────────────────────
   useEffect(() => {
@@ -773,7 +788,7 @@ export function SpatialMap({ state, onSelect, onHover, onBack }: Props) {
         }
       });
       const anchorFont = FONT_MAP.get(state.anchorId);
-      if (anchorFont) later(() => setConnections(buildConnections(anchorFont, { x: w * 0.5, y: h * 0.5 })), 300);
+      if (anchorFont) later(() => setConnections(buildConnections(anchorFont, anchorCenter())), 300);
       // Return focus to the partner that opened the specimen
       const pid = lastPartnerId.current;
       if (pid) later(() => nodeRefs.current.get(pid)?.focus({ preventScroll: true }), 60);
@@ -803,19 +818,26 @@ export function SpatialMap({ state, onSelect, onHover, onBack }: Props) {
         aria-hidden="true"
         style={{ position: 'absolute', inset: 0, pointerEvents: 'none', overflow: 'visible' }}
       >
-        {/* Faint concentric ring guides — decorative */}
+        {/* Faint concentric ring guides — decorative. They follow the anchor
+            when it sits a little higher than the map centre (phones). */}
+        <g style={{
+          transform: `translateY(${state.mode === 'idle' ? 0 : anchorArea.cy - idleArea.cy}px)`,
+          transition: prefersReducedMotion() ? 'none' : 'transform .85s cubic-bezier(.65,0,.35,1)',
+        }}>
         {[0.18, 0.36, 0.54, 0.72, 0.90].map((frac, i) => (
-          <circle
+          <ellipse
             key={`ring-${i}`}
-            cx={w * 0.5}
-            cy={h * 0.5}
-            r={Math.min(w * 0.46, h * 0.47) * frac}
+            cx={idleArea.cx}
+            cy={idleArea.cy}
+            rx={idleArea.rx * frac}
+            ry={idleArea.ry * frac}
             fill="none"
             stroke="var(--ink)"
             strokeWidth={0.5}
             opacity={0.05}
           />
         ))}
+        </g>
         {connections.map(conn => (
           <AnimatedConnection key={conn.key} conn={conn} />
         ))}
